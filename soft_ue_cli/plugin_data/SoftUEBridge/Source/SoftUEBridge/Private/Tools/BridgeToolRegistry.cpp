@@ -244,8 +244,11 @@ TArray<FString> FBridgeToolRegistry::GetLoadedModulePaths() const
 		{
 			continue;
 		}
-
+#if !IS_MONOLITHIC
 		FString ModuleFilePath = ModuleManager.GetModuleFilename(ModuleFName);
+#else
+		FString ModuleFilePath; // Monolithic builds don't have separate module files, so we won't have a path to report.
+#endif
 		for (const FString& Extension : Extensions)
 		{
 			if (!ModuleFilePath.IsEmpty())

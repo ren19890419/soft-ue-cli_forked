@@ -120,7 +120,7 @@ bool FBridgeServer::HandleRequest(const FHttpServerRequest& Request, const FHttp
 	// CORS preflight
 	if (Request.Verb == EHttpServerRequestVerbs::VERB_OPTIONS)
 	{
-		TUniquePtr<FHttpServerResponse> Resp = FHttpServerResponse::Create(TEXT(""), TEXT("text/plain"));
+		TUniquePtr<FHttpServerResponse> Resp = FHttpServerResponse::Create(FString(""), TEXT("text/plain"));
 		Resp->Headers.Add(TEXT("Access-Control-Allow-Origin"), {TEXT("*")});
 		Resp->Headers.Add(TEXT("Access-Control-Allow-Methods"), {TEXT("GET, POST, OPTIONS")});
 		Resp->Headers.Add(TEXT("Access-Control-Allow-Headers"), {TEXT("Content-Type")});
@@ -222,7 +222,7 @@ bool FBridgeServer::HandleRequest(const FHttpServerRequest& Request, const FHttp
 
 		if (BridgeReq.IsNotification())
 		{
-			TUniquePtr<FHttpServerResponse> Resp = FHttpServerResponse::Create(TEXT(""), TEXT("text/plain"));
+			TUniquePtr<FHttpServerResponse> Resp = FHttpServerResponse::Create(FString(""), TEXT("text/plain"));
 			Resp->Code = EHttpServerResponseCodes::Accepted;
 			OnComplete(MoveTemp(Resp));
 			return;
