@@ -1,13 +1,11 @@
-"""Tests for cli/soft_ue_cli/skills — skill discovery and retrieval."""
+﻿"""Tests for cli/soft_ue_cli/skills ??skill discovery and retrieval."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / "cli"))
 
 from soft_ue_cli.skills import get_skill, list_skills
 from soft_ue_cli.__main__ import build_parser, cmd_skills
@@ -39,8 +37,9 @@ def test_list_skills_contains_blueprint_to_cpp():
     assert "author-anim-state-test" in names
     assert "author-bp-parity-test" in names
     assert "author-invariant-test" in names
-    assert "author-umg-designer" in names
-    assert "author-umg-workflow" in names
+    assert "author-umg" in names
+    assert "author-umg-designer" not in names
+    assert "author-umg-workflow" not in names
 
 
 # -- get_skill -----------------------------------------------------------------
@@ -181,8 +180,8 @@ def test_authoring_subskills_target_cpp_committed_tests():
     assert "Source/<Project>Tests/Private/Invariants/TEST_<Slug>.cpp" in invariant
 
 
-def test_author_umg_designer_skill_targets_apply_widget_tree():
-    content = get_skill("author-umg-designer")
+def test_author_umg_skill_targets_designer_navigation_and_runtime_verification():
+    content = get_skill("author-umg")
     assert content is not None
     assert "soft-ue-cli umg designer apply" in content
     assert "CanvasPanel" in content
@@ -195,12 +194,6 @@ def test_author_umg_designer_skill_targets_apply_widget_tree():
     assert "umg_expected_layout.json" in content
     assert "placeholder asset manifest" in content
     assert "umg layout compare" in content
-
-
-def test_author_umg_workflow_skill_targets_navigation_and_runtime_verification():
-    content = get_skill("author-umg-workflow")
-    assert content is not None
-    assert "soft-ue-cli umg designer apply" in content
     assert "soft-ue-cli umg navigation wire" in content
     assert "soft-ue-cli umg verify navigation" in content
     assert "stable widget-name contract" in content
@@ -212,7 +205,7 @@ def test_author_umg_workflow_skill_targets_navigation_and_runtime_verification()
 
 def test_all_skills_have_required_frontmatter():
     """Every .md skill file must have name, description, and version in frontmatter."""
-    skills_dir = Path(__file__).parents[2] / "cli" / "soft_ue_cli" / "skills"
+    skills_dir = Path(__file__).parents[1] / "soft_ue_cli" / "skills"
     for md_file in skills_dir.glob("*.md"):
         text = md_file.read_text(encoding="utf-8")
         assert text.startswith("---"), f"{md_file.name} missing frontmatter"

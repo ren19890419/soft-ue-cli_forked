@@ -2,6 +2,33 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.37.0] - 2026-06-06
+
+### Added
+- Added optional `--anim-map OLD=NEW` support to `anim retarget blueprint` so duplicated AnimBlueprints can repoint AnimSequence, BlendSpace, montage, and PoseSearchDatabase references along with bone-name remaps.
+- Added `anim pose-search database-repoint` to repoint PoseSearchDatabase schema references and nested animation asset references, with optional best-effort reindexing.
+- Added `asset repoint-references` to walk nested reflected UObject properties and replace matching hard or soft asset references in arbitrary assets such as DataAssets.
+- Added `asset skeletal-socket create` and `asset skeletal-socket remove` for creating, updating, and removing mesh-owned SkeletalMesh sockets, including socket and bone names that are read-only through Unreal Python.
+
+### Fixed
+- `anim retarget blueprint` now repoints duplicated AnimBlueprint generated-class references stored in chooser contexts, K2 nodes, and class-typed bindings.
+- `anim pose-search database-repoint` now traverses nested animation asset entries inside PoseSearchDatabase instanced structs and invokes database reindexing after mutation.
+
+## [1.36.0] - 2026-06-03
+
+### Added
+- Added `anim retarget blueprint` to duplicate an AnimBlueprint onto a target skeleton and remap authored `FBoneReference` bone names using explicit bone maps.
+- Added `anim pose-search inspect` and `anim pose-search remap` to read PoseSearchSchema skeleton/channel bone references and remap sampled bone names for renamed skeleton migrations.
+
+## [1.35.0] - 2026-06-03
+
+### Added
+- Added `metasound inspect` for read-only MetaSound Source/Patch graph inspection, including interface inputs/outputs, nodes, edges, and input defaults.
+- Added `anim retarget repoint-references` to safely batch-repoint AnimSequence references in AnimMontage and BlendSpace assets, with optional target skeleton assignment, checkout, and save support.
+
+### Fixed
+- Added a bridge-backed animation repointing path so agents can avoid editor hangs caused by raw Python dependency/internal property traversal on AnimMontage assets.
+
 ## [1.34.0] - 2026-05-25
 
 ### Changed

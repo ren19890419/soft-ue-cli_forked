@@ -70,11 +70,16 @@ public class SoftUEBridgeEditor : ModuleRules
 			// Project Settings
 			"GameplayTags",
 			"EngineSettings",
+			"DesktopPlatform",
 			"Projects",
 
 			// StateTree
 			"StateTreeModule",
 			"StateTreeEditorModule",
+
+			// MetaSound (read-only graph inspection)
+			"MetasoundFrontend",
+			"MetasoundEngine",
 
 			// Python Scripting
 			"PythonScriptPlugin",
@@ -92,6 +97,7 @@ public class SoftUEBridgeEditor : ModuleRules
 			"Landscape",
 
 			// Rewind Debugger
+			"GameplayInsights",
 			"RewindDebuggerInterface",
 			"TraceLog",
 			"TraceAnalysis",

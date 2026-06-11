@@ -1,7 +1,7 @@
 ---
 name: test-tools
 description: Exhaustive integration test of all soft-ue-cli tools against a live UE instance. Writes a JSON report.
-version: 2.6.0
+version: 2.6.3
 ---
 
 # test-tools — Integration Test Suite
@@ -109,6 +109,15 @@ class MCPClient:
     _BRIDGE_TO_MCP: dict[str, str] = {
         "get-class-hierarchy": "class-hierarchy",
         "get-project-info":    "project-info",
+        "anim-repoint-references": "anim retarget repoint-references",
+        "anim-retarget-blueprint": "anim retarget blueprint",
+        "pose-search-schema-inspect": "anim pose-search inspect",
+        "pose-search-schema-remap": "anim pose-search remap",
+        "pose-search-database-repoint": "anim pose-search database-repoint",
+        "asset-repoint-references": "asset repoint-references",
+        "skeletal-mesh-socket-create": "asset skeletal-socket create",
+        "skeletal-mesh-socket-remove": "asset skeletal-socket remove",
+        "metasound-inspect": "metasound inspect",
     }
 
     def __init__(self) -> None:
@@ -268,10 +277,10 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
             error = str(exc)[:300]
         return _record(name, tool, args, passed, int((time.time() - t0) * 1000), error)
 
-    def run_cli(name, *args, check_stdout=None) -> dict:
+    def run_cli(name, *args, check_stdout=None, timeout=30) -> dict:
         t0 = time.time()
         try:
-            proc = subprocess.run(CLI + list(args), capture_output=True, text=True, timeout=30)
+            proc = subprocess.run(CLI + list(args), capture_output=True, text=True, timeout=timeout)
             passed = proc.returncode == 0
             if passed and check_stdout:
                 passed = check_stdout(proc.stdout)
@@ -991,14 +1000,10 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
              timeout=PIE_TIMEOUT)
     time.sleep(4)
     run_test("pie-session status", "pie-session", {"action": "status"}, has("state"), timeout=PIE_TIMEOUT)
-    if os.environ.get("SOFT_UE_TEST_PIE_TICK") == "1":
-        run_test("pie-tick explicit delta", "pie-tick", {
-            "frames": 2,
-            "delta": 0.0166666,
-        }, has("ticks"), timeout=PIE_TIMEOUT)
-    else:
-        _record("pie-tick explicit delta", "pie-tick", {},
-                True, 0, "skipped: SOFT_UE_TEST_PIE_TICK not set; pie-tick is isolated because it can hang/OOM this editor build")
+    run_test("pie-tick explicit delta", "pie-tick", {
+        "frames": 2,
+        "delta": 0.0166666,
+    }, lambda r: r.get("ticks") == 2 and r.get("world_time_delta", 0) > 0, timeout=PIE_TIMEOUT)
     run_test("capture-screenshot pie-window composited", "capture-screenshot",
              {"mode": "pie-window", "scale": 70, "color_mode": "color"},
              lambda r: "file_path" in r or r.get("capture_mode") == "pie-window",
@@ -1015,6 +1020,153 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
         "capture_after": True,
         "remove_preview": True,
     }, lambda r: r.get("success") is True and r.get("created_preview_widget") is True, timeout=PIE_TIMEOUT)
+    _umg_preview_handle = None
+    _umg_preview_root = None
+    _umg_runtime_widget_count = 0
+    _umg_runtime_layout = os.path.join(_umg_layout_tmp, "umg_runtime_layout.json")
+
+    def _remember_umg_preview(stdout: str) -> bool:
+        nonlocal _umg_preview_handle, _umg_preview_root
+        data = json.loads(stdout)
+        _umg_preview_handle = data.get("preview_handle")
+        _umg_preview_root = data.get("widget_name")
+        if not _umg_preview_root:
+            roots = data.get("root_widgets") or []
+            _umg_preview_root = next((r.get("name") for r in roots if isinstance(r, dict) and r.get("name")), None)
+        return data.get("success") is True and bool(_umg_preview_handle) and bool(_umg_preview_root)
+
+    run_cli(
+        "umg preview replace canonical",
+        "--timeout",
+        str(int(PIE_TIMEOUT)),
+        "umg",
+        "preview",
+        "replace",
+        "--widget-class",
+        wbp_path,
+        "--pie-index",
+        "0",
+        "--fullscreen",
+        "--viewport-size",
+        "1920,1080",
+        "--capture-after",
+        check_stdout=_remember_umg_preview,
+        timeout=PIE_TIMEOUT,
+    )
+    if _umg_preview_handle:
+        reg_teardown("umg-preview-remove", {"preview_handle": _umg_preview_handle})
+
+    def _preview_list_has_created_widget(stdout: str) -> bool:
+        data = json.loads(stdout)
+        previews = data.get("previews") or []
+        roots = data.get("root_widgets") or []
+        return (
+            data.get("preview_count", 0) >= 1
+            and any(p.get("preview_handle") == _umg_preview_handle for p in previews if isinstance(p, dict))
+            and (
+                any(p.get("widget_name") == _umg_preview_root for p in previews if isinstance(p, dict))
+                or any(r.get("name") == _umg_preview_root for r in roots if isinstance(r, dict))
+            )
+        )
+
+    run_cli(
+        "umg preview list canonical",
+        "--timeout",
+        str(int(PIE_TIMEOUT)),
+        "umg",
+        "preview",
+        "list",
+        "--pie-index",
+        "0",
+        check_stdout=_preview_list_has_created_widget,
+        timeout=PIE_TIMEOUT,
+    )
+
+    def _remember_runtime_widget_count(s: str) -> bool:
+        nonlocal _umg_runtime_widget_count
+        result = json.loads(s)
+        _umg_runtime_widget_count = int(result.get("widget_count") or 0)
+        roots = result.get("root_widgets") or []
+        return (
+            _umg_runtime_widget_count > 0
+            and any(r.get("name") == _umg_preview_root for r in roots if isinstance(r, dict))
+        )
+
+    run_cli(
+        "umg runtime inspect preview tree",
+        "--timeout",
+        str(int(PIE_TIMEOUT)),
+        "umg",
+        "runtime",
+        "inspect",
+        "--pie-index",
+        "0",
+        "--root-widget",
+        _umg_preview_root or "",
+        "--include-slate",
+        check_stdout=_remember_runtime_widget_count,
+        timeout=PIE_TIMEOUT,
+    )
+
+    run_cli(
+        "umg verify widgets preview root",
+        "--timeout",
+        str(int(PIE_TIMEOUT)),
+        "umg",
+        "verify",
+        "widgets",
+        "--pie-index",
+        "0",
+        "--root-widget",
+        _umg_preview_root or "",
+        "--expected-widgets",
+        json.dumps(["RootCanvas"]),
+        check_stdout=lambda s: json.loads(s).get("success") is True,
+        timeout=PIE_TIMEOUT,
+    )
+
+    def _runtime_layout_matches_inspect(s: str) -> bool:
+        layout = json.loads(s)
+        widgets = layout.get("widgets", [])
+        names = {w.get("name") for w in widgets if isinstance(w, dict)}
+        return (
+            len(json.loads(s).get("widgets", [])) >= _umg_runtime_widget_count
+            and _umg_runtime_widget_count > 0
+            and _umg_preview_root in names
+            and any("bounds" in w for w in widgets if isinstance(w, dict))
+            and os.path.exists(_umg_runtime_layout)
+        )
+
+    run_cli(
+        "umg layout extract runtime non-empty",
+        "--timeout",
+        str(int(PIE_TIMEOUT)),
+        "umg",
+        "layout",
+        "extract",
+        "--source",
+        "runtime",
+        "--root-widget",
+        _umg_preview_root or "",
+        "--full-geometry",
+        "--output",
+        _umg_runtime_layout,
+        check_stdout=_runtime_layout_matches_inspect,
+        timeout=PIE_TIMEOUT,
+    )
+    if _umg_preview_handle:
+        run_cli(
+            "umg preview remove canonical",
+            "--timeout",
+            str(int(PIE_TIMEOUT)),
+            "umg",
+            "preview",
+            "remove",
+            "--preview-handle",
+            _umg_preview_handle,
+            check_stdout=lambda s: json.loads(s).get("success") is True,
+            timeout=PIE_TIMEOUT,
+        )
     run_test("get-logs during PIE", "get-logs", {"limit": 5}, has("lines"), timeout=PIE_TIMEOUT)
     run_test("pie-session stop", "pie-session", {"action": "stop", "timeout": PIE_TIMEOUT}, has("success"), timeout=PIE_TIMEOUT)
 
@@ -1089,13 +1241,31 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
     run_cli("capture viewport help", "capture", "viewport", "--help",
             check_stdout=lambda s: "--source" in s and "--scale" in s)
     run_cli("capture screenshot help", "capture", "screenshot", "--help",
-            check_stdout=lambda s: "--source" in s and "pie-window" in s)
+            check_stdout=lambda s: "--source" in s and "pie-window" in s and "--output-file" in s)
     run_cli("mutable graph add-node help", "mutable", "graph", "add-node", "--help",
             check_stdout=lambda s: "mutable graph add-node" in s and "--properties" in s)
     run_cli("statetree inspect help", "statetree", "inspect", "--help",
             check_stdout=lambda s: "statetree inspect" in s and "--include" in s)
     run_cli("anim rewind status help", "anim", "rewind", "status", "--help",
-            check_stdout=lambda s: "rewind-status" in s and "recording" in s.lower())
+            check_stdout=lambda s: "anim rewind status" in s and "recording" in s.lower())
+    run_cli("anim retarget repoint-references help", "anim", "retarget", "repoint-references", "--help",
+            check_stdout=lambda s: "anim retarget repoint-references" in s and "--target-skeleton" in s)
+    run_cli("anim retarget blueprint help", "anim", "retarget", "blueprint", "--help",
+            check_stdout=lambda s: "anim retarget blueprint" in s and "--bone-map" in s and "--anim-map" in s and "--target-skeleton" in s)
+    run_cli("anim pose-search inspect help", "anim", "pose-search", "inspect", "--help",
+            check_stdout=lambda s: "anim pose-search inspect" in s and "schema_path" in s)
+    run_cli("anim pose-search remap help", "anim", "pose-search", "remap", "--help",
+            check_stdout=lambda s: "anim pose-search remap" in s and "--bone-map" in s)
+    run_cli("anim pose-search database-repoint help", "anim", "pose-search", "database-repoint", "--help",
+            check_stdout=lambda s: "anim pose-search database-repoint" in s and "--anim-map" in s and "--schema" in s)
+    run_cli("asset repoint-references help", "asset", "repoint-references", "--help",
+            check_stdout=lambda s: "asset repoint-references" in s and "--map" in s)
+    run_cli("asset skeletal-socket create help", "asset", "skeletal-socket", "create", "--help",
+            check_stdout=lambda s: "asset skeletal-socket create" in s and "socket_name" in s)
+    run_cli("asset skeletal-socket remove help", "asset", "skeletal-socket", "remove", "--help",
+            check_stdout=lambda s: "asset skeletal-socket remove" in s and "socket_name" in s)
+    run_cli("metasound inspect help", "metasound", "inspect", "--help",
+            check_stdout=lambda s: "metasound inspect" in s and "asset_path" in s)
     run_cli("asset preview help", "asset", "preview", "--help",
             check_stdout=lambda s: "asset preview" in s and "--resolution" in s)
     run_cli("blueprint graph inspect help", "blueprint", "graph", "inspect", "--help",
@@ -1108,12 +1278,18 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
         json.dump({"widgets": [{"name": "Root", "normalized_bounds": [0, 0, 1, 1]}]}, fh)
     run_cli("umg layout compare smoke", "umg", "layout", "compare", "--mode", "geometry", _umg_expected, _umg_actual,
             check_stdout=lambda s: '"success": true' in s)
+    run_cli("umg layout extract help", "umg", "layout", "extract", "--help",
+            check_stdout=lambda s: "--preview-handle" in s and "--full-geometry" in s)
     run_cli("umg preview help", "umg", "preview", "--help",
             check_stdout=lambda s: "create" in s and "replace" in s and "remove" in s)
+    run_cli("umg preview replace help", "umg", "preview", "replace", "--help",
+            check_stdout=lambda s: "--fullscreen" in s and "--viewport-size" in s and "--viewport-anchors" in s)
     run_cli("umg verify help", "umg", "verify", "--help",
             check_stdout=lambda s: "widgets" in s and "navigation" in s)
     run_cli("umg workflow help", "umg", "workflow", "--help",
-            check_stdout=lambda s: "run" in s)
+            check_stdout=lambda s: "run" in s and "iterate-layout" in s)
+    run_cli("umg workflow iterate-layout help", "umg", "workflow", "iterate-layout", "--help",
+            check_stdout=lambda s: "--concept-layout" in s and "--output-dir" in s and "--max-iterations" in s)
     for _co_label, _co_args in (
         ("mutable graph add-node", ("mutable", "graph", "add-node")),
         ("mutable graph add-parameter", ("mutable", "graph", "add-parameter")),
@@ -1182,6 +1358,14 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
 
     begin_suite("advanced-automation")
 
+    run_cli("automation tests run help", "automation", "tests", "run", "--help",
+            check_stdout=lambda s: "automation tests run" in s and "structured JSON" in s)
+    run_test("automation tests list-only no-match", "run-automation-tests", {
+        "filter": "SoftUEBridgeDefinitelyMissingAutomationTest",
+        "list_only": True,
+        "max_tests": 1,
+    }, lambda r: r.get("matched_count") == 0 and "matched_tests" in r)
+
     run_test("batch-call pie/query/logs smoke", "batch-call", {
         "calls": [
             {"tool": "query-level", "args": {"limit": 3}},
@@ -1216,6 +1400,161 @@ def _run_single_mode(mode_name: str, caller) -> list[dict]:
             check_stdout=lambda s: "anim sync-marker add" in s and "time" in s)
     run_cli("anim sync-marker remove help", "anim", "sync-marker", "remove", "--help",
             check_stdout=lambda s: "anim sync-marker remove" in s and "tolerance" in s)
+    _repoint_assets = [
+        part.strip()
+        for part in os.environ.get("SOFT_UE_TEST_ANIM_REPOINT_ASSETS", "").split(",")
+        if part.strip()
+    ]
+    _repoint_map_env = os.environ.get("SOFT_UE_TEST_ANIM_REPOINT_MAP", "").strip()
+    if _repoint_assets and _repoint_map_env:
+        _repoint_map = {}
+        for _entry in _repoint_map_env.split(","):
+            if "=" in _entry:
+                _old, _new = _entry.split("=", 1)
+            else:
+                _old, _new = _entry.split(":", 1)
+            _repoint_map[_old.strip()] = _new.strip()
+        run_test("anim-repoint-references smoke", "anim-repoint-references", {
+            "asset_paths": _repoint_assets,
+            "replacement_map": _repoint_map,
+        }, lambda r: r.get("success") is True and "assets" in r)
+    else:
+        _record("anim-repoint-references smoke", "anim-repoint-references", {},
+                True, 0, "skipped: set SOFT_UE_TEST_ANIM_REPOINT_ASSETS and SOFT_UE_TEST_ANIM_REPOINT_MAP")
+
+    _anim_bp_source = os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_SOURCE", "").strip()
+    _anim_bp_target = os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_TARGET", "").strip()
+    _anim_bp_skeleton = os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_SKELETON", "").strip()
+    _anim_bp_bone_map_env = os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_BONE_MAP", "").strip()
+    if _anim_bp_source and _anim_bp_target and _anim_bp_skeleton and _anim_bp_bone_map_env:
+        _anim_bp_bone_map = {}
+        for _entry in _anim_bp_bone_map_env.split(","):
+            if "=" in _entry:
+                _old, _new = _entry.split("=", 1)
+            else:
+                _old, _new = _entry.split(":", 1)
+            _anim_bp_bone_map[_old.strip()] = _new.strip()
+        run_test("anim-retarget-blueprint smoke", "anim-retarget-blueprint", {
+            "source_blueprint": _anim_bp_source,
+            "target_blueprint": _anim_bp_target,
+            "target_skeleton": _anim_bp_skeleton,
+            "bone_map": _anim_bp_bone_map,
+            **({
+                "animation_asset_map": {
+                    (_entry.split("=", 1)[0] if "=" in _entry else _entry.split(":", 1)[0]).strip():
+                    (_entry.split("=", 1)[1] if "=" in _entry else _entry.split(":", 1)[1]).strip()
+                    for _entry in os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_ANIM_MAP", "").split(",")
+                    if _entry.strip() and ("=" in _entry or ":" in _entry)
+                }
+            } if os.environ.get("SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_ANIM_MAP", "").strip() else {}),
+        }, lambda r: r.get("success") is True and r.get("target_blueprint"))
+    else:
+        _record("anim-retarget-blueprint smoke", "anim-retarget-blueprint", {},
+                True, 0, "skipped: set SOFT_UE_TEST_ANIM_RETARGET_BLUEPRINT_SOURCE/TARGET/SKELETON/BONE_MAP")
+
+    _pose_schema = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_SCHEMA", "").strip()
+    if _pose_schema:
+        run_test("pose-search-schema-inspect smoke", "pose-search-schema-inspect", {
+            "schema_path": _pose_schema,
+        }, lambda r: r.get("success") is True and "bone_references" in r)
+    else:
+        _record("pose-search-schema-inspect smoke", "pose-search-schema-inspect", {},
+                True, 0, "skipped: set SOFT_UE_TEST_POSE_SEARCH_SCHEMA")
+
+    _pose_bone_map_env = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_BONE_MAP", "").strip()
+    if _pose_schema and _pose_bone_map_env:
+        _pose_bone_map = {}
+        for _entry in _pose_bone_map_env.split(","):
+            if "=" in _entry:
+                _old, _new = _entry.split("=", 1)
+            else:
+                _old, _new = _entry.split(":", 1)
+            _pose_bone_map[_old.strip()] = _new.strip()
+        _pose_args = {
+            "schema_path": _pose_schema,
+            "bone_map": _pose_bone_map,
+        }
+        _pose_target_skeleton = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_TARGET_SKELETON", "").strip()
+        if _pose_target_skeleton:
+            _pose_args["target_skeleton"] = _pose_target_skeleton
+        run_test("pose-search-schema-remap smoke", "pose-search-schema-remap", _pose_args,
+                 lambda r: r.get("success") is True and "changes" in r)
+    else:
+        _record("pose-search-schema-remap smoke", "pose-search-schema-remap", {},
+                True, 0, "skipped: set SOFT_UE_TEST_POSE_SEARCH_SCHEMA and SOFT_UE_TEST_POSE_SEARCH_BONE_MAP")
+
+    _pose_database = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_DATABASE", "").strip()
+    _pose_database_schema = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_DATABASE_SCHEMA", "").strip()
+    _pose_database_anim_map_env = os.environ.get("SOFT_UE_TEST_POSE_SEARCH_DATABASE_ANIM_MAP", "").strip()
+    if _pose_database and (_pose_database_schema or _pose_database_anim_map_env):
+        _pose_database_args = {"database_path": _pose_database}
+        if _pose_database_schema:
+            _pose_database_args["schema_path"] = _pose_database_schema
+        if _pose_database_anim_map_env:
+            _pose_database_anim_map = {}
+            for _entry in _pose_database_anim_map_env.split(","):
+                if "=" in _entry:
+                    _old, _new = _entry.split("=", 1)
+                else:
+                    _old, _new = _entry.split(":", 1)
+                _pose_database_anim_map[_old.strip()] = _new.strip()
+            _pose_database_args["animation_asset_map"] = _pose_database_anim_map
+        run_test("pose-search-database-repoint smoke", "pose-search-database-repoint", _pose_database_args,
+                 lambda r: r.get("success") is True and "database_path" in r)
+    else:
+        _record("pose-search-database-repoint smoke", "pose-search-database-repoint", {},
+                True, 0, "skipped: set SOFT_UE_TEST_POSE_SEARCH_DATABASE plus SCHEMA or ANIM_MAP")
+
+    _asset_repoint_assets = [
+        part.strip()
+        for part in os.environ.get("SOFT_UE_TEST_ASSET_REPOINT_ASSETS", "").split(",")
+        if part.strip()
+    ]
+    _asset_repoint_map_env = os.environ.get("SOFT_UE_TEST_ASSET_REPOINT_MAP", "").strip()
+    if _asset_repoint_assets and _asset_repoint_map_env:
+        _asset_repoint_map = {}
+        for _entry in _asset_repoint_map_env.split(","):
+            if "=" in _entry:
+                _old, _new = _entry.split("=", 1)
+            else:
+                _old, _new = _entry.split(":", 1)
+            _asset_repoint_map[_old.strip()] = _new.strip()
+        run_test("asset-repoint-references smoke", "asset-repoint-references", {
+            "asset_paths": _asset_repoint_assets,
+            "replacement_map": _asset_repoint_map,
+        }, lambda r: r.get("success") is True and "assets" in r)
+    else:
+        _record("asset-repoint-references smoke", "asset-repoint-references", {},
+                True, 0, "skipped: set SOFT_UE_TEST_ASSET_REPOINT_ASSETS and SOFT_UE_TEST_ASSET_REPOINT_MAP")
+
+    _socket_mesh = os.environ.get("SOFT_UE_TEST_SOCKET_MESH", "").strip()
+    _socket_bone = os.environ.get("SOFT_UE_TEST_SOCKET_BONE", "").strip()
+    if _socket_mesh and _socket_bone:
+        _socket_name = f"{LABEL_PFX}_socket"
+        run_test("skeletal-mesh-socket-create smoke", "skeletal-mesh-socket-create", {
+            "asset_path": _socket_mesh,
+            "socket_name": _socket_name,
+            "bone_name": _socket_bone,
+            "location": [0, 0, 0],
+            "rotation": [0, 0, 0],
+            "scale": [1, 1, 1],
+        }, lambda r: r.get("success") is True and r.get("socket", {}).get("socket_name") == _socket_name)
+        run_test("skeletal-mesh-socket-remove smoke", "skeletal-mesh-socket-remove", {
+            "asset_path": _socket_mesh,
+            "socket_name": _socket_name,
+        }, lambda r: r.get("success") is True and r.get("removed_socket", {}).get("socket_name") == _socket_name)
+    else:
+        _record("skeletal mesh socket smoke", "skeletal-mesh-socket-create", {},
+                True, 0, "skipped: set SOFT_UE_TEST_SOCKET_MESH and SOFT_UE_TEST_SOCKET_BONE")
+
+    _metasound_asset = os.environ.get("SOFT_UE_TEST_METASOUND_ASSET", "").strip()
+    if _metasound_asset:
+        run_test("metasound-inspect smoke", "metasound-inspect", {
+            "asset_path": _metasound_asset,
+        }, lambda r: r.get("success") is True and "graph" in r)
+    else:
+        _record("metasound-inspect smoke", "metasound-inspect", {},
+                True, 0, "skipped: set SOFT_UE_TEST_METASOUND_ASSET")
 
     run_test("call-function transient native", "call-function", {
         "class_path": "/Script/Engine.Actor",

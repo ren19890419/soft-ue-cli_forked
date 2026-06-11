@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/soft-ue-cli.svg)](https://pypi.org/project/soft-ue-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![AI agents](https://img.shields.io/badge/AI_agents-ready-7c3aed)](#why-soft-ue-cli)
-[![skills](https://img.shields.io/badge/skills-13-84cc16)](#skills-llm-workflow-prompts)
+[![skills](https://img.shields.io/badge/skills-12-84cc16)](#skills-llm-workflow-prompts)
 [![commands](https://img.shields.io/badge/commands-120%2B-f97316)](#complete-command-reference)
 [![MCP](https://img.shields.io/badge/MCP-server-0ea5e9)](#mcp-server-mode)
 [![AI built for coding agents](https://img.shields.io/badge/AI_built_for-coding_agents-6b7280)](#why-soft-ue-cli)
@@ -14,9 +14,9 @@
 Built and maintained by a solo developer. [Support this project](#support-this-project) if it saves you time.
 
 
-**Control Unreal Engine 5 from your AI agent or terminal.** soft-ue-cli gives any LLM -- via **MCP server** or **CLI** -- 120+ commands and tools to spawn actors, edit Blueprints, inspect materials, build UMG screens, read and patch UE config files, run Play-In-Editor sessions, capture token-efficient screenshots, profile performance, and inspect local Unreal assets.
+**Control Unreal Engine 5 from your AI agent or terminal.** soft-ue-cli gives any LLM -- via **MCP server** or **CLI** -- 120+ commands and tools to spawn actors, edit Blueprints, inspect materials and MetaSounds, build UMG screens, read and patch UE config files, run Play-In-Editor sessions, capture token-efficient screenshots, profile performance, and inspect local Unreal assets.
 
-Two connection paths. One package. Bridge tools when Unreal is running, offline tools when it is not, and a command catalog that tells agents which surface is canonical, which removed flat names map to which canonical tools, and which optional Unreal plugins are required.
+Two connection paths. One package. Bridge tools when Unreal is running, offline tools when it is not, and a command catalog that tells agents which command families are supported, which runtime/editor requirements apply, and which optional Unreal plugins are required.
 
 
 ```text
@@ -42,8 +42,8 @@ soft-ue-cli  (CLI or MCP server)
 
 - **MCP server + CLI in one package** -- use as an MCP server (`mcp-serve`) for Claude Desktop, Cursor, Windsurf, and other MCP clients, **or** as a standard CLI for Claude Code, shell scripts, and CI/CD. Same 120+ tool surface either way.
 - **AI-native UE automation** -- purpose-built so LLM agents can read, modify, and test Unreal Engine projects without a human touching the editor.
-- **120+ commands and tools** covering actors, Blueprints, materials, StateTrees, Mutable/CustomizableObject, widgets, assets, config files, PIE sessions, profiling, screenshots, and local Unreal file analysis.
-- **Canonical command families only** -- UMG, capture, Mutable, StateTree, animation, asset, and Blueprint workflows are grouped under `umg`, `capture`, `mutable`, `statetree`, `anim`, `asset`, and `blueprint`. Removed flat names are discoverable with `commands --include-removed`.
+- **120+ commands and tools** covering actors, Blueprints, materials, MetaSounds, StateTrees, Mutable/CustomizableObject, widgets, assets, config files, PIE sessions, profiling, screenshots, and local Unreal file analysis.
+- **Command families, not one-off names** -- UMG, capture, Mutable, StateTree, MetaSound, animation, asset, and Blueprint workflows are grouped under `umg`, `capture`, `mutable`, `statetree`, `metasound`, `anim`, `asset`, and `blueprint`.
 - **Plugin-aware metadata** -- `soft-ue-cli commands --json` reports bridge/editor/PIE requirements plus optional Unreal plugin dependencies, and bridge tools return structured `plugin_unavailable` errors when a plugin is missing.
 - **Token-aware visual feedback** -- viewport and screenshot capture can resize output by scale, width, or height and can emit color, grayscale, or monochrome images for lower LLM token cost.
 - **Online + offline workflows** -- bridge-backed UE mutation and runtime inspection when Unreal is open, plus direct local inspection, diff, and config tooling when it is not.
@@ -59,7 +59,7 @@ soft-ue-cli  (CLI or MCP server)
 Recent releases moved soft-ue-cli from a flat list of one-off bridge calls toward a discoverable automation surface for agents:
 
 - `commands` is the source of truth for command status, replacement names, runtime requirements, optional plugin requirements, and examples.
-- Canonical families (`umg`, `capture`, `mutable`, `statetree`, `anim`, `asset`, `blueprint`) are now the supported public command surface. Removed flat commands are listed only as migration metadata via `commands --include-removed`.
+- Canonical families (`umg`, `capture`, `mutable`, `statetree`, `metasound`, `anim`, `asset`, `blueprint`) are the supported public command surface.
 - UMG and screenshot workflows now support the full agent loop: author, inspect, run PIE, capture visual evidence, compare layout, and keep image payloads small.
 - Optional plugin workflows are expected to compile cleanly without those plugins installed, then fail at runtime with actionable `plugin_unavailable` diagnostics.
 - CLI/Python/bridge probing is treated as the exploration layer; durable gameplay regressions should move into project-native C++ Automation Specs.
@@ -74,7 +74,7 @@ soft-ue-cli is intentionally a different layer rather than a replacement for fir
 - It includes offline commands for `.uasset`, `.uexp`, `.ini`, `.uproject`, `.uplugin`, and `BuildConfiguration.xml` files, even when the editor is closed.
 - It ships curated LLM skill prompts and a `test-tools` smoke workflow for repeatable agent execution, not just raw editor operations.
 - It supports UE 5.7 today and also runs in Development/DebugGame cooked builds, while still exposing a normal terminal CLI and an MCP server from the same package.
-- It reports removed flat command migrations through `commands --include-removed` instead of keeping duplicate public command names alive.
+- It reports command requirements and optional plugin dependencies in structured metadata so agents can choose the right workflow without guessing.
 - It reports optional plugin requirements and missing-plugin failures in structured JSON so agents can recover instead of guessing.
 
 The two can coexist: use UE's first-party MCP for native UE 5.8 editor coverage when it fits, and use soft-ue-cli for UE 5.7 projects, cooked Development/DebugGame builds, CLI/CI automation, offline inspection, curated workflows, visual capture transforms, optional plugin diagnostics, and bridge tools that move independently of engine releases.
@@ -224,12 +224,11 @@ soft-ue-cli commands --category umg
 soft-ue-cli commands --category mutable
 soft-ue-cli commands --category statetree
 soft-ue-cli commands --plugin Mutable --json
-soft-ue-cli commands --include-removed --json
 ```
 
 The README uses a conservative `120+` count. For exact numbers in the installed version, use `soft-ue-cli commands --json` for the full catalog and `soft-ue-cli mcp-serve` for the MCP-exposed leaf tools.
 
-The JSON output marks each command as canonical, removed, or deprecated, and includes whether it needs the bridge, editor, PIE, or optional Unreal plugins. Removed entries are hidden by default; pass `--include-removed` to show the old flat command and its `canonical_command` migration target. Plugin-dependent bridge tools use a structured unavailable response when a plugin is missing:
+The JSON output marks each command's status and includes whether it needs the bridge, editor, PIE, or optional Unreal plugins. Plugin-dependent bridge tools use a structured unavailable response when a plugin is missing:
 
 ```json
 {
@@ -241,80 +240,24 @@ The JSON output marks each command as canonical, removed, or deprecated, and inc
 }
 ```
 
-UMG, capture, Mutable, StateTree, animation, asset, and Blueprint workflows now use canonical command families. Old one-off command names were removed from the public parser; use this migration table or `soft-ue-cli commands --include-removed --json` when updating scripts:
+The public command system is organized by domain:
 
-| Removed flat command | Migrate to |
-|----------------------|------------|
-| `apply-widget-tree` | `umg designer apply` |
-| `inspect-widget-blueprint` | `umg designer inspect` |
-| `wire-widget-navigation` | `umg navigation wire` |
-| `verify-umg-workflow` | `umg workflow run` |
-| `extract-umg-layout` | `umg layout extract` |
-| `compare-umg-layout` | `umg layout compare --mode geometry` |
-| `compare-umg-screenshot` | `umg layout compare --mode pixel` |
-| `capture-viewport` | `capture viewport` |
-| `capture-screenshot` | `capture screenshot --source <mode>` |
-| `capture-pie-screenshot` | `capture screenshot --source pie-window` |
-| `inspect-customizable-object-graph` | `mutable inspect graph` |
-| `inspect-mutable-parameters` | `mutable inspect parameters` |
-| `inspect-mutable-diagnostics` | `mutable inspect diagnostics` |
-| `add-co-node` | `mutable graph add-node` |
-| `add-co-parameter` | `mutable graph add-parameter` |
-| `add-co-mesh-option` | `mutable graph add-mesh-option` |
-| `set-co-base-mesh` | `mutable graph set-base-mesh` |
-| `add-co-group-child` | `mutable graph add-group-child` |
-| `set-co-node-property` | `mutable graph set-node-property` |
-| `connect-co-pins` | `mutable graph connect-pins` |
-| `regenerate-co-node-pins` | `mutable graph regenerate-node-pins` |
-| `remove-co-node` | `mutable graph remove-node` |
-| `create-co-from-spec` | `mutable graph create-from-spec` |
-| `wire-customizable-object-slot-from-table` | `mutable graph wire-slot-from-table` |
-| `compile-co` | `mutable compile` |
-| `query-statetree` | `statetree inspect` |
-| `add-statetree-state` | `statetree state add` |
-| `remove-statetree-state` | `statetree state remove` |
-| `add-statetree-task` | `statetree task add` |
-| `add-statetree-transition` | `statetree transition add` |
-| `inspect-anim-instance` | `anim instance inspect` |
-| `inspect-sync-markers` | `anim sync-marker inspect` |
-| `compare-sync-markers` | `anim sync-marker compare` |
-| `add-sync-marker` | `anim sync-marker add` |
-| `remove-sync-marker` | `anim sync-marker remove` |
-| `add-anim-state-machine` | `anim state-machine add` |
-| `add-anim-state` | `anim state add` |
-| `add-anim-transition` | `anim transition add` |
-| `rewind-start` | `anim rewind start` |
-| `rewind-stop` | `anim rewind stop` |
-| `rewind-status` | `anim rewind status` |
-| `rewind-list-tracks` | `anim rewind list-tracks` |
-| `rewind-overview` | `anim rewind overview` |
-| `rewind-snapshot` | `anim rewind snapshot` |
-| `rewind-save` | `anim rewind save` |
-| `query-asset` | `asset query` |
-| `delete-asset` | `asset delete` |
-| `release-asset-lock` | `asset release-lock` |
-| `get-asset-diff` | `asset diff` |
-| `get-asset-preview` | `asset preview` |
-| `open-asset` | `asset open` |
-| `set-asset-property` | `asset set-property` |
-| `inspect-uasset` | `asset inspect-file` |
-| `diff-uasset` | `asset diff-file` |
-| `save-asset` | `asset save` |
-| `create-asset` | `asset create` |
-| `query-blueprint` | `blueprint inspect` |
-| `query-blueprint-graph` | `blueprint graph inspect` |
-| `compile-blueprint` | `blueprint compile` |
-| `add-graph-node` | `blueprint node add` |
-| `remove-graph-node` | `blueprint node remove` |
-| `set-node-position` | `blueprint node position` |
-| `set-node-property` | `blueprint node property` |
-| `connect-graph-pins` | `blueprint pin connect` |
-| `disconnect-graph-pin` | `blueprint pin disconnect` |
-| `modify-interface` | `blueprint interface modify` |
+| Family | Use it for |
+|--------|------------|
+| `asset` | Content Browser assets, thumbnails, source-control diffs, local `.uasset` inspection, create/save/delete operations, and nested reference repointing |
+| `blueprint` | Blueprint inspection, graph/node/pin editing, interfaces, and compilation |
+| `capture` | Viewport and screenshot capture with source, sizing, and color-mode controls |
+| `mutable` | Mutable/CustomizableObject inspection, graph editing, parameter authoring, and compilation |
+| `statetree` | StateTree inspection, state editing, task authoring, and transitions |
+| `metasound` | Read-only MetaSound Source/Patch graph inspection |
+| `anim` | Animation instance inspection, sync markers, AnimBlueprint graph authoring, retarget migration, PoseSearch schema/database remapping, and Rewind Debugger workflows |
+| `umg` | Widget Blueprint designer trees, navigation contracts, runtime verification, preview lifecycle, and layout comparison |
+
+Use `soft-ue-cli <family> --help` to see the family, then drill down with subcommands such as `soft-ue-cli blueprint graph inspect --help`, `soft-ue-cli mutable graph add-node --help`, or `soft-ue-cli anim pose-search inspect --help`.
 
 ## Complete Command Reference
 
-Canonical commands are grouped under command families such as `blueprint`, `asset`, `mutable`, `anim`, `capture`, `umg`, and `statetree`. Run `soft-ue-cli <family> --help` or `soft-ue-cli <family> <subcommand> --help` for detailed options.
+Canonical commands are grouped under command families such as `blueprint`, `asset`, `mutable`, `metasound`, `anim`, `capture`, `umg`, and `statetree`. Run `soft-ue-cli <family> --help` or `soft-ue-cli <family> <subcommand> --help` for detailed options.
 
 ### Setup and Diagnostics
 
@@ -343,7 +286,6 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 | Command | Description |
 |---------|-------------|
 | `blueprint` | Canonical Blueprint inspection, graph, node, pin, interface, and compile command family |
-| `insert-graph-node` | Atomically insert a node between two connected nodes |
 | `blueprint inspect` | Inspect a Blueprint asset -- components, variables, functions, interfaces, event dispatchers |
 | `blueprint graph inspect` | Inspect event graphs, function graphs, nested AnimBlueprint graphs, node connections, positions, and class-filtered nodes |
 | `asset inspect-file` | Inspect a local `.uasset` file offline by parsed metadata, with best support for Blueprint and External Actor assets |
@@ -388,6 +330,9 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 | `asset delete` | Delete an asset |
 | `asset release-lock` | Best-effort close editors and release UE file handles for a specific asset |
 | `asset set-property` | Set a property on a Blueprint CDO or component, including nested `InstancedStruct` members |
+| `asset repoint-references` | Repoint nested hard and soft asset references inside arbitrary assets such as DataAssets |
+| `asset skeletal-socket create` | Create or update a mesh-owned SkeletalMesh socket, including socket and bone names |
+| `asset skeletal-socket remove` | Remove a mesh-owned SkeletalMesh socket by name |
 | `asset diff` | Get property-level diff of an asset vs. source control |
 | `asset preview` | Get a thumbnail/preview image of an asset |
 | `asset open` | Open an asset in the editor |
@@ -399,6 +344,8 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 |---------|-------------|
 | `query-material` | Inspect Material, Material Instance, or Material Function -- parameters, nodes, connections, `--parent-chain` |
 | `query-mpc` | Read or write Material Parameter Collection scalar/vector values |
+| `metasound` | Canonical MetaSound inspection command family |
+| `metasound inspect` | Read a MetaSound Source or Patch graph -- interface inputs/outputs, nodes, edges, and input defaults |
 
 ### Class and Type Inspection
 
@@ -414,12 +361,19 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 | `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
 | `pie-session` | Start, stop, pause, resume PIE -- also query actor state during play |
 | `pie-tick` | Start PIE if needed and advance the world deterministically by frame count |
-| `anim` | Canonical animation instance, sync marker, graph authoring, transition, and Rewind command family |
+| `anim` | Canonical animation instance, sync marker, graph authoring, retarget migration, PoseSearch, transition, and Rewind command family |
 | `anim instance inspect` | Snapshot a target actor's live `UAnimInstance` state or inspect static AnimBlueprint topology with `--asset-path` |
 | `anim sync-marker inspect` | List AuthoredSyncMarkers on an AnimSequence asset |
 | `anim sync-marker compare` | Compare sync marker names and timing across AnimSequence assets |
 | `anim sync-marker add` | Add an AuthoredSyncMarker to an AnimSequence asset |
 | `anim sync-marker remove` | Remove AuthoredSyncMarkers from an AnimSequence asset |
+| `anim retarget` | Canonical animation retarget, skeleton migration, and reference repointing command family |
+| `anim retarget repoint-references` | Safely repoint AnimSequence references inside AnimMontage and BlendSpace assets |
+| `anim retarget blueprint` | Duplicate an AnimBlueprint onto a target skeleton and remap authored `FBoneReference` bone names with `--bone-map OLD=NEW`, optionally repointing referenced animation assets with `--anim-map OLD=NEW` |
+| `anim pose-search` | Canonical PoseSearch schema, database, and skeleton migration command family |
+| `anim pose-search inspect` | Inspect PoseSearchSchema skeleton references and sampled bone names used by feature channels |
+| `anim pose-search remap` | Remap PoseSearchSchema sampled bone names and optionally replace schema skeleton references |
+| `anim pose-search database-repoint` | Repoint PoseSearchDatabase schema and animation asset references, optionally triggering best-effort reindexing |
 | `inspect-pawn-possession` | Inspect controller/pawn links, AI auto-possession, and hidden state in a running world |
 | `trigger-input` | Send input events to a running game (PIE or packaged build) |
 
@@ -506,13 +460,13 @@ Requires the **Animation Insights (GameplayInsights)** plugin enabled in Edit > 
 | Command | Description |
 |---------|-------------|
 | `anim rewind` | Canonical Rewind Debugger recording and inspection command family |
-| `rewind-start` | Start a Rewind Debugger recording with channel and actor filtering, or load an existing `.utrace` file with `--load` |
-| `rewind-stop` | Stop the current recording |
-| `rewind-status` | Query current recording state (detects recordings from CLI or editor UI) |
-| `rewind-list-tracks` | List all recorded actors and their available track types |
-| `rewind-overview` | Track-level summary for an actor (state machine transitions, montage play ranges, notify fire times) |
-| `rewind-snapshot` | Detailed animation state at a specific time or frame -- the time-travel equivalent of `anim instance inspect` |
-| `rewind-save` | Save the in-memory recording to a `.utrace` file |
+| `anim rewind start` | Start a Rewind Debugger recording with channel and actor filtering, or load an existing `.utrace` file with `--load` |
+| `anim rewind stop` | Stop the current recording |
+| `anim rewind status` | Query current recording state (detects recordings from CLI or editor UI) |
+| `anim rewind list-tracks` | List all recorded actors and their available track types |
+| `anim rewind overview` | Track-level summary for an actor (state machine transitions, montage play ranges, notify fire times) |
+| `anim rewind snapshot` | Detailed animation state at a specific time or frame -- the time-travel equivalent of `anim instance inspect` |
+| `anim rewind save` | Save the in-memory recording to a `.utrace` file |
 
 ### Build and Live Coding
 
@@ -536,8 +490,7 @@ Skills are markdown prompts that teach an LLM client how to perform complex mult
 | Skill | Description |
 |-------|-------------|
 | `blueprint-to-cpp` | Generate C++ `.h`/`.cpp` from a Blueprint asset -- Layer 1 (class scaffolding) + Layer 2 (graph logic translation) |
-| `author-umg-designer` | Convert a UI concept image plus text requirements into an editable UMG Designer tree JSON draft for `umg designer apply` |
-| `author-umg-workflow` | Turn a UI concept into an editable UMG Designer tree, stable widget-name navigation contract, and PIE interaction verification plan |
+| `author-umg` | Turn a UI concept into editable UMG Designer trees, stable widget-name navigation contracts, PIE interaction checks, and layout/visual comparison evidence |
 | `level-from-image` | Populate a UE level from a reference image -- analyzes the image, maps scene elements to project assets, batch-places actors, then iterates with visual feedback (viewport screenshots) |
 | `replay-changes` | Walk the binary-asset conflict recovery flow for Git or Perforce: extract base/local/remote revisions, inspect offline diffs, sync the incoming binary, and replay the wanted local edits manually |
 | `test-tools` | Run the exhaustive live integration test script across CLI and MCP modes, including offline `.uasset` smoke checks against a generated Blueprint |
@@ -639,7 +592,7 @@ soft-ue-cli umg layout extract --source runtime --root-widget WBP_MainMenu_C_0 -
 soft-ue-cli umg layout compare --mode geometry --subset concept_layout.json umg_runtime_layout.json --output umg_layout_report.json
 soft-ue-cli umg layout fit --concept concept_layout.json --actual umg_runtime_layout.json --spec menu_tree.json --output corrected_menu_tree.json
 soft-ue-cli umg designer inspect /Game/UI/WBP_MainMenu --include-defaults --depth-limit 8
-soft-ue-cli skills get author-umg-workflow
+soft-ue-cli skills get author-umg
 ```
 
 `umg navigation wire` fails fast while PIE is active or the editor is saving/garbage collecting because it mutates WidgetBlueprint assets. Stop PIE first, wait until the editor is idle, or pass `--allow-pie` / `--allow-busy` when you intentionally accept that risk.
@@ -665,9 +618,9 @@ soft-ue-cli query-struct /Game/Data/S_TraversalCheckResult
 ### Inspect Mutable / CustomizableObject assets safely
 
 ```bash
-soft-ue-cli inspect-customizable-object-graph /Game/Characters/CO_Hero.CO_Hero
-soft-ue-cli inspect-mutable-parameters /Game/Characters/CO_Hero.CO_Hero
-soft-ue-cli inspect-mutable-diagnostics /Game/Characters/CO_Hero.CO_Hero
+soft-ue-cli mutable inspect graph /Game/Characters/CO_Hero.CO_Hero
+soft-ue-cli mutable inspect parameters /Game/Characters/CO_Hero.CO_Hero
+soft-ue-cli mutable inspect diagnostics /Game/Characters/CO_Hero.CO_Hero
 ```
 
 ### Edit Mutable / CustomizableObject assets
@@ -676,10 +629,10 @@ soft-ue-cli inspect-mutable-diagnostics /Game/Characters/CO_Hero.CO_Hero
 soft-ue-cli mutable graph add-parameter /Game/Characters/CO_Hero.CO_Hero BodyHeight --parameter-type float
 soft-ue-cli mutable graph add-mesh-option /Game/Characters/CO_Hero.CO_Hero /Game/Meshes/SKM_Boots.SKM_Boots
 soft-ue-cli mutable graph add-group-child /Game/Characters/CO_Hero.CO_Hero <group-node-guid> <child-node-guid>
-soft-ue-cli regenerate-co-node-pins /Game/Characters/CO_Hero.CO_Hero <node-guid>
-soft-ue-cli connect-co-pins /Game/Characters/CO_Hero.CO_Hero <source-node-guid> Value <target-node-guid> Input
+soft-ue-cli mutable graph regenerate-node-pins /Game/Characters/CO_Hero.CO_Hero <node-guid>
+soft-ue-cli mutable graph connect-pins /Game/Characters/CO_Hero.CO_Hero <source-node-guid> Value <target-node-guid> Input
 soft-ue-cli mutable compile /Game/Characters/CO_Hero.CO_Hero
-soft-ue-cli remove-co-node /Game/Characters/CO_Hero.CO_Hero <node-guid>
+soft-ue-cli mutable graph remove-node /Game/Characters/CO_Hero.CO_Hero <node-guid>
 ```
 
 ### Start a PIE session and send input
@@ -710,8 +663,8 @@ soft-ue-cli blueprint pin connect /Game/BP_Player node1 "exec" node2 "execute"
 ### Manage Blueprint interfaces
 
 ```bash
-soft-ue-cli modify-interface /Game/ABP_Character add ALI_Locomotion
-soft-ue-cli modify-interface /Game/ABP_Character remove ALI_Locomotion
+soft-ue-cli blueprint interface modify /Game/ABP_Character add ALI_Locomotion
+soft-ue-cli blueprint interface modify /Game/ABP_Character remove ALI_Locomotion
 soft-ue-cli blueprint inspect /Game/ABP_Character --include interfaces
 ```
 
@@ -724,9 +677,9 @@ soft-ue-cli blueprint node add /Game/ALI_Locomotion AnimLayerFunction --graph-na
 ### Create an AnimBlueprint state machine
 
 ```bash
-soft-ue-cli add-anim-state-machine /Game/ABP_Hero Locomotion --default-state Idle
-soft-ue-cli add-anim-state /Game/ABP_Hero Locomotion Run --position 500,0
-soft-ue-cli add-anim-transition /Game/ABP_Hero Locomotion Idle Run --rule true
+soft-ue-cli anim state-machine add /Game/ABP_Hero Locomotion --default-state Idle
+soft-ue-cli anim state add /Game/ABP_Hero Locomotion Run --position 500,0
+soft-ue-cli anim transition add /Game/ABP_Hero Locomotion Idle Run --rule true
 soft-ue-cli blueprint node add /Game/ABP_Hero AnimGraphNode_SequencePlayer --graph-name Run
 ```
 
@@ -740,8 +693,8 @@ soft-ue-cli insert-graph-node /Game/ABP_Hero AnimGraphNode_LinkedAnimLayer \
 ### Save and compile after edits
 
 ```bash
-soft-ue-cli compile-blueprint /Game/ABP_Hero
-soft-ue-cli save-asset /Game/ABP_Hero
+soft-ue-cli blueprint compile /Game/ABP_Hero
+soft-ue-cli asset save /Game/ABP_Hero
 ```
 
 ### Refresh GameplayTags after editing config
@@ -754,7 +707,7 @@ soft-ue-cli request-gameplay-tag Status.Effect.Burning
 ### Disconnect a specific wire (preserving others)
 
 ```bash
-soft-ue-cli disconnect-graph-pin /Game/ABP_Hero {node-guid} OutputPose \
+soft-ue-cli blueprint pin disconnect /Game/ABP_Hero {node-guid} OutputPose \
   --target-node {other-guid} --target-pin InputPose
 ```
 

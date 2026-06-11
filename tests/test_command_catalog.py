@@ -1,13 +1,10 @@
-"""Tests for public command taxonomy metadata."""
+﻿"""Tests for public command taxonomy metadata."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / "cli"))
 
 from soft_ue_cli.command_catalog import (  # noqa: E402
     command_metadata_as_json,
@@ -52,6 +49,30 @@ def test_catalog_marks_capture_family_as_canonical_and_tracks_removed_migrations
     assert removed["capture-viewport"]["canonical_command"] == "capture viewport"
     assert removed["capture-screenshot"]["canonical_command"] == "capture screenshot --source <mode>"
     assert removed["capture-pie-screenshot"]["canonical_command"] == "capture screenshot --source pie-window"
+
+
+def test_catalog_exposes_umg_layout_iteration_workflow():
+    workflow = get_command_metadata("umg workflow iterate-layout")
+
+    assert workflow["status"] == "canonical"
+    assert workflow["layer"] == "workflow"
+    assert workflow["category"] == "workflow"
+    assert workflow["requires_bridge"] is True
+    assert workflow["requires_editor"] is True
+    assert workflow["requires_pie"] is True
+
+
+def test_catalog_migrates_runtime_widget_inspection_to_umg_family():
+    canonical = get_command_metadata("umg runtime inspect")
+    removed = {entry["name"]: entry for entry in iter_removed_command_metadata()}
+
+    assert canonical["status"] == "canonical"
+    assert canonical["category"] == "umg"
+    assert canonical["requires_bridge"] is True
+    assert canonical["requires_editor"] is True
+    assert canonical["requires_pie"] is True
+    assert removed["inspect-runtime-widgets"]["status"] == "removed"
+    assert removed["inspect-runtime-widgets"]["canonical_command"] == "umg runtime inspect"
 
 
 @pytest.mark.parametrize(
@@ -125,6 +146,77 @@ def test_catalog_includes_plugin_requirements_for_optional_plugin_tools():
     assert enhanced_input["required_plugins"][0]["name"] == "Enhanced Input"
     assert enhanced_input["requires_editor"] is False
     assert enhanced_input["requires_pie"] is True
+
+
+def test_catalog_marks_anim_retarget_repoint_as_bridge_editor_command():
+    meta = get_command_metadata("anim retarget repoint-references")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "animation"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+
+
+def test_catalog_marks_anim_retarget_blueprint_as_bridge_editor_command():
+    meta = get_command_metadata("anim retarget blueprint")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "animation"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+
+
+def test_catalog_marks_pose_search_schema_commands_as_pose_search_plugin_tools():
+    inspect = get_command_metadata("anim pose-search inspect")
+    remap = get_command_metadata("anim pose-search remap")
+    database_repoint = get_command_metadata("anim pose-search database-repoint")
+
+    assert inspect["status"] == "canonical"
+    assert inspect["layer"] == "bridge"
+    assert inspect["category"] == "animation"
+    assert inspect["requires_bridge"] is True
+    assert inspect["requires_editor"] is True
+    assert inspect["required_plugins"][0]["name"] == "PoseSearch"
+
+    assert remap["status"] == "canonical"
+    assert remap["layer"] == "bridge"
+    assert remap["category"] == "animation"
+    assert remap["requires_bridge"] is True
+    assert remap["requires_editor"] is True
+    assert remap["required_plugins"][0]["module"] == "PoseSearch"
+
+    assert database_repoint["status"] == "canonical"
+    assert database_repoint["layer"] == "bridge"
+    assert database_repoint["category"] == "animation"
+    assert database_repoint["requires_bridge"] is True
+    assert database_repoint["requires_editor"] is True
+    assert database_repoint["required_plugins"][0]["name"] == "PoseSearch"
+
+
+def test_catalog_marks_asset_repoint_references_as_bridge_editor_command():
+    meta = get_command_metadata("asset repoint-references")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "asset"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+
+
+def test_catalog_marks_metasound_inspect_as_bridge_editor_command():
+    meta = get_command_metadata("metasound inspect")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "inspect"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
 
 
 def test_catalog_can_filter_commands_by_required_plugin():
