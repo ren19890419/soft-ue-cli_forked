@@ -35,21 +35,6 @@ def _plugin_source_path(relative: str) -> Path:
     return root / "soft_ue_cli" / "plugin_data" / "SoftUEBridge" / relative
 
 
-def _skill_path(relative: str) -> Path:
-    root = _repo_root()
-    monorepo_path = root / "cli" / "soft_ue_cli" / "skills" / relative
-    if monorepo_path.exists():
-        return monorepo_path
-    return root / "soft_ue_cli" / "skills" / relative
-
-
-def _agent_guide_text() -> str:
-    guide = _repo_root() / "AGENTS.md"
-    if not guide.exists():
-        pytest.skip("AGENTS.md is monorepo-only")
-    return guide.read_text(encoding="utf-8")
-
-
 def test_editor_dependency_plugins_are_editor_target_only():
     descriptor = json.loads(_descriptor_path().read_text(encoding="utf-8"))
     plugin_refs = {entry["Name"]: entry for entry in descriptor["Plugins"]}
@@ -340,7 +325,10 @@ def test_bridge_registry_remove_tools_does_not_shadow_singleton_instance():
 
 
 def test_agent_guide_warns_new_tools_against_static_registration_macro():
-    guide = _agent_guide_text()
+    guide_path = _repo_root().joinpath("AGENTS.md")
+    if not guide_path.exists():
+        pytest.skip("AGENTS.md is only exported in the monorepo test layout")
+    guide = guide_path.read_text(encoding="utf-8")
 
     assert "Do not use REGISTER_BRIDGE_TOOL" in guide
     assert "RegisterToolClass" in guide
@@ -379,6 +367,127 @@ def test_anim_repoint_references_tool_uses_deferred_registration():
     assert "Registry.RegisterToolClass<UAnimRepointReferencesTool>()" not in startup_body
     assert "REGISTER_BRIDGE_TOOL(UAnimRepointReferencesTool)" not in source
     assert "ReplaceReferredAnimations" in source
+
+
+def test_anim_montage_set_slot_animation_tool_is_registered_and_directly_mutates_slots():
+    module = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
+    ).read_text(encoding="utf-8")
+    header = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Public/Tools/Animation/AnimMontageSlotTool.h"
+    ).read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Animation/AnimMontageSlotTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    startup_body = module.split("void FSoftUEBridgeEditorModule::StartupModule()", 1)[1].split(
+        "void FSoftUEBridgeEditorModule::ShutdownModule()", 1
+    )[0]
+
+    assert "anim-montage-set-slot-animation" in header
+    assert "Tools/Animation/AnimMontageSlotTool.h" in module
+    assert "Registry.RegisterToolClass<UAnimMontageSetSlotAnimationTool>()" in module
+    assert "Registry.RegisterToolClass<UAnimMontageSetSlotAnimationTool>()" not in startup_body
+    assert "REGISTER_BRIDGE_TOOL(UAnimMontageSetSlotAnimationTool)" not in source
+    for token in (
+        "UAnimMontage",
+        "UAnimSequenceBase",
+        "SlotAnimTracks",
+        "FSlotAnimationTrack",
+        "FAnimSegment",
+        "AnimReference",
+        "GetSectionIndex",
+        "GetSectionStartAndEndTime",
+        "MarkPackageDirty",
+    ):
+        assert token in source
+
+
+def test_run_python_script_blocks_known_crash_prone_ik_retarget_batch_call_by_default():
+    header = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Public/Tools/Scripting/RunPythonScriptTool.h"
+    ).read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Scripting/RunPythonScriptTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "allow_unsafe_python_calls" in source
+    assert "ContainsUnsafeNativeCall" in header
+    assert "IKRetargetBatchOperation" in source
+    assert "duplicate_and_retarget" in source
+    assert "known_crash_prone_python_call" in source
+
+
+def test_customizable_object_mesh_helpers_refresh_soft_mesh_references():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Asset/EditCustomizableObjectGraphTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "ApplyCustomizableObjectMeshReferenceFixups",
+        "FSoftObjectProperty",
+        "StaticLoadObject",
+        "PostEditChangeProperty",
+        "RefreshCustomizableObjectNodePins",
+        "SkeletalMesh",
+        "StaticMesh",
+    ):
+        assert token in source
+
+
+def test_customizable_object_layout_blocks_tool_is_registered_and_mutates_layouts():
+    module = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
+    ).read_text(encoding="utf-8")
+    header = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Public/Tools/Asset/EditCustomizableObjectGraphTool.h"
+    ).read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Asset/EditCustomizableObjectGraphTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "set-customizable-object-layout-blocks" in header
+    assert "USetCustomizableObjectLayoutBlocksTool" in module
+    assert "Registry.RegisterToolClass<USetCustomizableObjectLayoutBlocksTool>()" in module
+    for token in (
+        "FindMutableLayoutTarget",
+        "FindMutableMeshPinLayoutTarget",
+        "ApplyMutableLayoutBlocks",
+        "CustomizableObjectLayout",
+        "PinsDataId",
+        "GetPinDataForCustomizableObjectPin",
+        "Layouts",
+        "UVChannel",
+        "uv_channel",
+        "lod_index",
+        "section_index",
+        "GridSize",
+        "MaxGridSize",
+        "PackingStrategy",
+        "Blocks",
+        "ParentLayoutIndex",
+        "parent_material_node",
+    ):
+        assert token in source
+
+
+def test_customizable_object_layout_pin_data_map_key_uses_msvc_safe_cast():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Asset/EditCustomizableObjectGraphTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "reinterpret_cast<const FGuid*>(MapHelper.GetKeyPtr(Index))" in source
+    assert "static_cast<const FGuid*>(MapHelper.GetKeyPtr(Index))" not in source
+
+
+def test_bridge_property_serializer_parses_guid_structs_from_strings():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Utils/BridgePropertySerializer.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "StructProp->Struct == TBaseStructure<FGuid>::Get()" in source
+    assert "FGuid::Parse(GuidString, GuidValue)" in source
+    assert "Expected FGuid string" in source
 
 
 def test_anim_blueprint_and_pose_search_migration_tools_use_deferred_registration():
@@ -494,7 +603,10 @@ def test_bridge_health_includes_process_identity_for_restart_detection():
 
 
 def test_agent_guide_requires_deferred_registration_for_new_uclass_tools():
-    guide = _agent_guide_text()
+    guide_path = _repo_root().joinpath("AGENTS.md")
+    if not guide_path.exists():
+        pytest.skip("AGENTS.md is only exported in the monorepo test layout")
+    guide = guide_path.read_text(encoding="utf-8")
 
     assert "OnPostEngineInit" in guide
     assert "newly added UCLASS" in guide
@@ -743,7 +855,10 @@ def test_set_node_position_supports_customizable_object_graphs():
 
 
 def test_live_smoke_skill_expects_slot_wiring_macro():
-    content = _skill_path("test-tools.md").read_text(encoding="utf-8")
+    root = _repo_root()
+    monorepo_path = root / "cli" / "soft_ue_cli" / "skills" / "test-tools.md"
+    public_path = root / "soft_ue_cli" / "skills" / "test-tools.md"
+    content = (monorepo_path if monorepo_path.exists() else public_path).read_text(encoding="utf-8")
 
     assert "wire-customizable-object-slot-from-table" in content
 
@@ -1260,3 +1375,4 @@ def test_trigger_input_routes_keys_through_player_controller_and_enhanced_input(
     assert "FindEnhancedInputAction" in source
     assert '"EnhancedInput"' in build_cs
     assert '"Name": "EnhancedInput"' in descriptor
+

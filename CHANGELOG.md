@@ -2,6 +2,26 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.39.0] - 2026-06-20
+
+### Added
+- Added `mutable graph set-layout-blocks` for headless CustomizableObject LayoutBlocks / RemoveMeshBlocks grid and block authoring.
+- `mutable graph set-layout-blocks` can now target source mesh UV layouts with `--lod-index`, `--section-index`, and `--uv-channel`.
+
+### Fixed
+- `mutable graph add-mesh-option` and `mutable graph set-base-mesh` now refresh soft mesh object references and pins after assigning SkeletalMesh or StaticMesh properties.
+- `mutable graph set-node-property` now accepts 32-hex or hyphenated strings for reflected `FGuid` properties.
+- Fixed an MSVC build break in Mutable mesh pin layout lookup caused by casting raw `FScriptMapHelper` key storage with `static_cast`.
+- UE 5.7 C4996 warnings in enum, struct, and material query bridge code were migrated to current APIs.
+
+## [1.38.0] - 2026-06-13
+
+### Added
+- Added `anim montage inspect` to read native AnimMontage notifies, notify states, composite sections, next-section links, and slot tracks.
+- Added `anim retarget sequence` to retarget one AnimSequence through native IK Retargeter code into an explicit target asset path.
+- Added `anim montage set-slot-animation` to replace or create an AnimMontage slot segment from native bridge code, avoiding raw Python mutation of `SlotAnimTracks`.
+- Added a `run-python-script` guard for known crash-prone native UE Python batch calls, plus `--allow-unsafe-python-calls` for explicit opt-in when the caller accepts editor-crash risk.
+
 ## [1.37.0] - 2026-06-06
 
 ### Added

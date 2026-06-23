@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 from soft_ue_cli import __main__ as main_mod
 from soft_ue_cli.__main__ import (
     _SCRIPTS_DIR,
@@ -64,6 +63,7 @@ from soft_ue_cli.__main__ import (
     cmd_setup,
     cmd_wait_for_ready,
     cmd_set_co_base_mesh,
+    cmd_set_co_layout_blocks,
     cmd_set_co_node_property,
     cmd_connect_co_pins,
     cmd_create_co_from_spec,
@@ -626,6 +626,28 @@ def test_run_python_script_path_reads_file(tmp_path):
         {
             "script_path": str(script_path.resolve()),
             "world": "pie",
+        },
+    )
+
+
+def test_run_python_script_allow_unsafe_python_calls_routes_to_bridge_tool():
+    parser = build_parser()
+    script = "import unreal; unreal.IKRetargetBatchOperation.duplicate_and_retarget([])"
+    args = parser.parse_args([
+        "run-python-script",
+        "--script",
+        script,
+        "--allow-unsafe-python-calls",
+    ])
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={"output": "ok"}) as mock_call:
+        cmd_run_python_script(args)
+
+    mock_call.assert_called_once_with(
+        "run-python-script",
+        {
+            "script": script,
+            "allow_unsafe_python_calls": True,
         },
     )
 
@@ -1637,6 +1659,86 @@ def test_cmd_set_co_base_mesh_forwards_node_property():
             "asset_path": "/Game/Characters/CO_Hero.CO_Hero",
             "node": "node-guid-1",
             "properties": {"SkeletalMesh": "/Game/Meshes/SKM_Base.SKM_Base"},
+        },
+    )
+
+
+def test_cmd_set_co_layout_blocks_forwards_layout_payload():
+    parser = build_parser()
+    args = parser.parse_args([
+        "mutable",
+        "graph",
+        "set-layout-blocks",
+        "/Game/Characters/CO_Hero.CO_Hero",
+        "remove-blocks-node",
+        "--grid-size",
+        "4,4",
+        "--max-grid-size",
+        "8,8",
+        "--packing-strategy",
+        "Fixed",
+        "--parent-layout-index",
+        "1",
+        "--parent-material-node",
+        "material-node",
+        "--blocks",
+        '[{"min":[0,0],"size":[1,1]},{"min":[2,2],"max":[4,4],"priority":3}]',
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        cmd_set_co_layout_blocks(args)
+
+    mock_run.assert_called_once_with(
+        "set-customizable-object-layout-blocks",
+        {
+            "asset_path": "/Game/Characters/CO_Hero.CO_Hero",
+            "node": "remove-blocks-node",
+            "grid_size": [4, 4],
+            "max_grid_size": [8, 8],
+            "packing_strategy": "Fixed",
+            "parent_layout_index": 1,
+            "parent_material_node": "material-node",
+            "blocks": [
+                {"min": [0, 0], "size": [1, 1]},
+                {"min": [2, 2], "max": [4, 4], "priority": 3},
+            ],
+        },
+    )
+
+
+def test_cmd_set_co_layout_blocks_forwards_source_uv_layout_target():
+    parser = build_parser()
+    args = parser.parse_args([
+        "mutable",
+        "graph",
+        "set-layout-blocks",
+        "/Game/Characters/CO_Hero.CO_Hero",
+        "skeletal-mesh-node",
+        "--grid-size",
+        "4,4",
+        "--blocks",
+        '[{"min":[0,0],"size":[1,1]}]',
+        "--lod-index",
+        "1",
+        "--section-index",
+        "2",
+        "--uv-channel",
+        "3",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        cmd_set_co_layout_blocks(args)
+
+    mock_run.assert_called_once_with(
+        "set-customizable-object-layout-blocks",
+        {
+            "asset_path": "/Game/Characters/CO_Hero.CO_Hero",
+            "node": "skeletal-mesh-node",
+            "grid_size": [4, 4],
+            "blocks": [{"min": [0, 0], "size": [1, 1]}],
+            "lod_index": 1,
+            "section_index": 2,
+            "uv_channel": 3,
         },
     )
 
@@ -2744,6 +2846,125 @@ def test_anim_retarget_blueprint_routes_optional_anim_map_to_bridge_tool():
                 "/Game/Anim/AS_Idle": "/Game/Anim/RTG/AS_Idle",
                 "/Game/Anim/BS_Run": "/Game/Anim/RTG/BS_Run",
             },
+            "save": True,
+        },
+    )
+
+
+def test_anim_montage_set_slot_animation_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "anim",
+        "montage",
+        "set-slot-animation",
+        "/Game/Anim/AM_Attack",
+        "/Game/Anim/AS_Attack_RTG",
+        "--slot-name",
+        "UpperBody",
+        "--section",
+        "Attack",
+        "--start-time",
+        "0.25",
+        "--play-rate",
+        "1.2",
+        "--looping-count",
+        "2",
+        "--checkout",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "anim-montage-set-slot-animation",
+        {
+            "asset_path": "/Game/Anim/AM_Attack",
+            "anim_path": "/Game/Anim/AS_Attack_RTG",
+            "slot_name": "UpperBody",
+            "section": "Attack",
+            "start_time": 0.25,
+            "play_rate": 1.2,
+            "looping_count": 2,
+            "checkout": True,
+            "save": True,
+        },
+    )
+
+
+def test_anim_montage_set_slot_animation_uses_default_slot_and_minimal_payload():
+    args = build_parser().parse_args([
+        "anim",
+        "montage",
+        "set-slot-animation",
+        "/Game/Anim/AM_Attack",
+        "/Game/Anim/AS_Attack_RTG",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "anim-montage-set-slot-animation",
+        {
+            "asset_path": "/Game/Anim/AM_Attack",
+            "anim_path": "/Game/Anim/AS_Attack_RTG",
+        },
+    )
+
+
+def test_anim_montage_inspect_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "anim",
+        "montage",
+        "inspect",
+        "/Game/Anim/AM_Attack",
+        "--include",
+        "notifies,sections,slots",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "anim-montage-inspect",
+        {
+            "asset_path": "/Game/Anim/AM_Attack",
+            "include": "notifies,sections,slots",
+        },
+    )
+
+
+def test_anim_retarget_sequence_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "anim",
+        "retarget",
+        "sequence",
+        "/Game/Anim/AS_Attack",
+        "/Game/Anim/RTG/AS_Attack_RTG",
+        "--source-mesh",
+        "/Game/Characters/SKM_Source",
+        "--target-mesh",
+        "/Game/Characters/SKM_Target",
+        "--ik-retargeter",
+        "/Game/Characters/RTG_SourceToTarget",
+        "--overwrite",
+        "--checkout",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "anim-retarget-sequence",
+        {
+            "source_sequence": "/Game/Anim/AS_Attack",
+            "target_sequence": "/Game/Anim/RTG/AS_Attack_RTG",
+            "source_mesh": "/Game/Characters/SKM_Source",
+            "target_mesh": "/Game/Characters/SKM_Target",
+            "ik_retargeter": "/Game/Characters/RTG_SourceToTarget",
+            "overwrite": True,
+            "checkout": True,
             "save": True,
         },
     )
@@ -4350,3 +4571,4 @@ def test_call_function_batch_json_forwards(tmp_path):
         "call-function",
         {"function_name": "Bar", "class_path": "/Game/Foo", "use_cdo": True, "batch": batch},
     )
+

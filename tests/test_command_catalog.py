@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import pytest
 
-
 from soft_ue_cli.command_catalog import (  # noqa: E402
     command_metadata_as_json,
     filter_command_metadata,
@@ -170,6 +169,46 @@ def test_catalog_marks_anim_retarget_blueprint_as_bridge_editor_command():
     assert meta["requires_pie"] is False
 
 
+def test_catalog_marks_anim_montage_set_slot_animation_as_bridge_editor_command():
+    family = get_command_metadata("anim montage")
+    meta = get_command_metadata("anim montage set-slot-animation")
+
+    assert family["status"] == "canonical"
+    assert family["category"] == "animation"
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "animation"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+    assert "set-slot-animation" in meta["examples"][0]
+
+
+def test_catalog_marks_anim_montage_inspect_as_bridge_editor_command():
+    meta = get_command_metadata("anim montage inspect")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "animation"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+    assert "inspect" in meta["examples"][0]
+
+
+def test_catalog_marks_anim_retarget_sequence_as_ikrig_editor_command():
+    meta = get_command_metadata("anim retarget sequence")
+
+    assert meta["status"] == "canonical"
+    assert meta["layer"] == "bridge"
+    assert meta["category"] == "animation"
+    assert meta["requires_bridge"] is True
+    assert meta["requires_editor"] is True
+    assert meta["requires_pie"] is False
+    assert meta["required_plugins"][0]["name"] == "IK Rig"
+    assert "sequence" in meta["examples"][0]
+
+
 def test_catalog_marks_pose_search_schema_commands_as_pose_search_plugin_tools():
     inspect = get_command_metadata("anim pose-search inspect")
     remap = get_command_metadata("anim pose-search remap")
@@ -280,3 +319,4 @@ def test_all_catalog_entries_have_required_metadata_fields():
 
     for entry in iter_command_metadata():
         assert required <= set(entry), entry["name"]
+

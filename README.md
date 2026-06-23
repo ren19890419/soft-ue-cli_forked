@@ -250,7 +250,7 @@ The public command system is organized by domain:
 | `mutable` | Mutable/CustomizableObject inspection, graph editing, parameter authoring, and compilation |
 | `statetree` | StateTree inspection, state editing, task authoring, and transitions |
 | `metasound` | Read-only MetaSound Source/Patch graph inspection |
-| `anim` | Animation instance inspection, sync markers, AnimBlueprint graph authoring, retarget migration, PoseSearch schema/database remapping, and Rewind Debugger workflows |
+| `anim` | Animation instance inspection, sync markers, AnimBlueprint graph authoring, AnimMontage slot repair, retarget migration, PoseSearch schema/database remapping, and Rewind Debugger workflows |
 | `umg` | Widget Blueprint designer trees, navigation contracts, runtime verification, preview lifecycle, and layout comparison |
 
 Use `soft-ue-cli <family> --help` to see the family, then drill down with subcommands such as `soft-ue-cli blueprint graph inspect --help`, `soft-ue-cli mutable graph add-node --help`, or `soft-ue-cli anim pose-search inspect --help`.
@@ -322,6 +322,7 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 | `mutable graph set-base-mesh` | Set the mesh reference on an existing CustomizableObject node |
 | `mutable graph add-group-child` | Connect a child object node into an object group using Mutable's default `Object` -> `Objects` pins |
 | `mutable graph set-node-property` | Set reflected properties or matching pin defaults on a CustomizableObject graph node |
+| `mutable graph set-layout-blocks` | Set a LayoutBlocks, RemoveMeshBlocks, or source mesh UV layout grid and block rectangles |
 | `mutable graph connect-pins` | Connect two CustomizableObject graph pins by node GUID and pin name, with one automatic pin regeneration retry by default |
 | `mutable graph regenerate-node-pins` | Regenerate pins for one Mutable/CustomizableObject graph node and return the refreshed pin list |
 | `mutable compile` | Compile a CustomizableObject asset and return structured status |
@@ -361,14 +362,18 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 | `exec-console-command` | Execute arbitrary UE console commands directly in editor, PIE, or game worlds |
 | `pie-session` | Start, stop, pause, resume PIE -- also query actor state during play |
 | `pie-tick` | Start PIE if needed and advance the world deterministically by frame count |
-| `anim` | Canonical animation instance, sync marker, graph authoring, retarget migration, PoseSearch, transition, and Rewind command family |
+| `anim` | Canonical animation instance, sync marker, graph authoring, montage, retarget migration, PoseSearch, transition, and Rewind command family |
 | `anim instance inspect` | Snapshot a target actor's live `UAnimInstance` state or inspect static AnimBlueprint topology with `--asset-path` |
 | `anim sync-marker inspect` | List AuthoredSyncMarkers on an AnimSequence asset |
 | `anim sync-marker compare` | Compare sync marker names and timing across AnimSequence assets |
 | `anim sync-marker add` | Add an AuthoredSyncMarker to an AnimSequence asset |
 | `anim sync-marker remove` | Remove AuthoredSyncMarkers from an AnimSequence asset |
+| `anim montage` | Canonical AnimMontage inspection, slot, and segment repair command family |
+| `anim montage inspect` | Inspect native AnimMontage notifies, notify states, composite sections, next-section links, and slot tracks |
+| `anim montage set-slot-animation` | Replace or create a single AnimMontage slot segment from a native bridge tool |
 | `anim retarget` | Canonical animation retarget, skeleton migration, and reference repointing command family |
 | `anim retarget repoint-references` | Safely repoint AnimSequence references inside AnimMontage and BlendSpace assets |
+| `anim retarget sequence` | Retarget one AnimSequence through the native IK Retargeter batch operation to an explicit target asset path |
 | `anim retarget blueprint` | Duplicate an AnimBlueprint onto a target skeleton and remap authored `FBoneReference` bone names with `--bone-map OLD=NEW`, optionally repointing referenced animation assets with `--anim-map OLD=NEW` |
 | `anim pose-search` | Canonical PoseSearch schema, database, and skeleton migration command family |
 | `anim pose-search inspect` | Inspect PoseSearchSchema skeleton references and sampled bone names used by feature channels |
@@ -405,7 +410,7 @@ Canonical commands are grouped under command families such as `blueprint`, `asse
 
 | Command | Description |
 |---------|-------------|
-| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path` and exposing optional PIE-world helpers |
+| `run-python-script` | Execute a Python script inside UE's embedded Python interpreter, preserving normal file semantics for `--script-path`, exposing optional PIE-world helpers, and blocking known crash-prone native batch calls unless `--allow-unsafe-python-calls` is supplied |
 | `save-script` | Save a reusable Python script to the local script library |
 | `list-scripts` | List all saved Python scripts |
 | `delete-script` | Delete a saved script |
@@ -629,6 +634,8 @@ soft-ue-cli mutable inspect diagnostics /Game/Characters/CO_Hero.CO_Hero
 soft-ue-cli mutable graph add-parameter /Game/Characters/CO_Hero.CO_Hero BodyHeight --parameter-type float
 soft-ue-cli mutable graph add-mesh-option /Game/Characters/CO_Hero.CO_Hero /Game/Meshes/SKM_Boots.SKM_Boots
 soft-ue-cli mutable graph add-group-child /Game/Characters/CO_Hero.CO_Hero <group-node-guid> <child-node-guid>
+soft-ue-cli mutable graph set-layout-blocks /Game/Characters/CO_Hero.CO_Hero <remove-blocks-node-guid> --grid-size 4,4 --blocks '[{"min":[0,0],"size":[1,1]}]' --parent-layout-index 0
+soft-ue-cli mutable graph set-layout-blocks /Game/Characters/CO_Hero.CO_Hero <skeletal-mesh-node-guid> --grid-size 4,4 --blocks '[{"min":[0,0],"size":[1,1]}]' --lod-index 0 --section-index 0 --uv-channel 0
 soft-ue-cli mutable graph regenerate-node-pins /Game/Characters/CO_Hero.CO_Hero <node-guid>
 soft-ue-cli mutable graph connect-pins /Game/Characters/CO_Hero.CO_Hero <source-node-guid> Value <target-node-guid> Input
 soft-ue-cli mutable compile /Game/Characters/CO_Hero.CO_Hero
@@ -681,6 +688,27 @@ soft-ue-cli anim state-machine add /Game/ABP_Hero Locomotion --default-state Idl
 soft-ue-cli anim state add /Game/ABP_Hero Locomotion Run --position 500,0
 soft-ue-cli anim transition add /Game/ABP_Hero Locomotion Idle Run --rule true
 soft-ue-cli blueprint node add /Game/ABP_Hero AnimGraphNode_SequencePlayer --graph-name Run
+```
+
+### Repair an AnimMontage slot segment
+
+```bash
+soft-ue-cli anim montage set-slot-animation /Game/Anim/AM_Attack /Game/Anim/AS_Attack_RTG \
+  --slot-name UpperBody --section Attack --save
+```
+
+### Inspect an AnimMontage
+
+```bash
+soft-ue-cli anim montage inspect /Game/Anim/AM_Attack --include notifies,sections,slots
+```
+
+### Retarget one AnimSequence
+
+```bash
+soft-ue-cli anim retarget sequence /Game/Anim/AS_Attack /Game/Anim/RTG/AS_Attack_RTG \
+  --source-mesh /Game/Characters/SKM_Source --target-mesh /Game/Characters/SKM_Target \
+  --ik-retargeter /Game/Characters/RTG_SourceToTarget --overwrite --save
 ```
 
 ### Insert a node between two connected nodes
