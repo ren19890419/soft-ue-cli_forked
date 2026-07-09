@@ -6,6 +6,7 @@
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
+#include "Utils/BridgeJsonObjectUtils.h"
 
 TSharedPtr<FJsonValue> FBridgePropertySerializer::SerializePropertyValue(
 	FProperty* Property,
@@ -861,23 +862,11 @@ bool FBridgePropertySerializer::DeserializeArrayProperty(
 		int32 NewIndex = ArrayHelper.AddValue();
 		void* ElementPtr = ArrayHelper.GetRawPtr(NewIndex);
 
-		if (FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner))
+		FString ElementError;
+		if (!FBridgePropertySerializer::DeserializePropertyValue(ArrayProp->Inner, ElementPtr, ElementValue, ElementError))
 		{
-			const TSharedPtr<FJsonObject>* ElementObject = nullptr;
-			if (ElementValue->TryGetObject(ElementObject) && ElementObject->IsValid())
-			{
-				if (!FJsonObjectConverter::JsonObjectToUStruct(ElementObject->ToSharedRef(), InnerStruct->Struct, ElementPtr))
-				{
-					OutError = FString::Printf(TEXT("Failed to deserialize array element %d"), NewIndex);
-					return false;
-				}
-			}
-		}
-		else
-		{
-			// For simple types, use ImportText
-			FString ElementStr = ElementValue->AsString();
-			ArrayProp->Inner->ImportText_Direct(*ElementStr, ElementPtr, nullptr, PPF_None);
+			OutError = FString::Printf(TEXT("Failed to deserialize array element %d: %s"), NewIndex, *ElementError);
+			return false;
 		}
 	}
 
@@ -903,12 +892,14 @@ bool FBridgePropertySerializer::DeserializeMapProperty(
 
 	for (const auto& Pair : (*JsonObject)->Values)
 	{
+		const FString Key = SoftUE::JsonObjectUtils::KeyToString(Pair.Key);
+
 		// Add a new pair
 		int32 NewIndex = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
 
 		// Set key
 		void* KeyPtr = MapHelper.GetKeyPtr(NewIndex);
-		MapProp->KeyProp->ImportText_Direct(*Pair.Key, KeyPtr, nullptr, PPF_None);
+		MapProp->KeyProp->ImportText_Direct(*Key, KeyPtr, nullptr, PPF_None);
 
 		// Set value
 		void* ValPtr = MapHelper.GetValuePtr(NewIndex);

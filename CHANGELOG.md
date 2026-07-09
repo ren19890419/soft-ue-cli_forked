@@ -2,6 +2,33 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## [1.41.0] - 2026-07-06
+
+### Changed
+- Documented UE 5.8 as the main development target while maintaining UE 5.7 compatibility.
+
+### Fixed
+- `set-node-property` now resolves nested AnimGraph inner `Node` struct paths, `Node.`-prefixed paths, struct-array element paths, and full array replacement through the shared property serializer.
+- Fixed a CLI client `KeyError` when a text response item omits the optional `text` field.
+- Fixed escaped testimonial attribution output so submitted testimonials render the attribution dash correctly.
+- Fixed an AnimMontage unity-build compile collision by giving inspect and slot segment JSON helpers unique names.
+- Migrated UE 5.8-deprecated editor APIs for post-engine-init delegates, nested object enumeration, package-save detection, and Rewind Debugger trace-file checks while preserving UE 5.7 compatibility.
+
+## [1.40.0] - 2026-07-06
+
+### Added
+- Added `diagnose` command families for asset, character, build-log, Perforce, issue, runtime probe, data validation, and handoff/report workflows.
+- Added command catalog and offline smoke coverage for the new diagnostic surfaces.
+
+### Fixed
+- Fixed the MCP `capture-pie-screenshot` compatibility alias so it routes to the canonical screenshot bridge command.
+- Fixed Unicode JSON output fallback on consoles that cannot encode non-ASCII characters.
+- `status` now reports structured unhealthy bridge diagnostics instead of failing with a generic connection result.
+- `mutable graph set-layout-blocks` now supports parent material linkage metadata for RemoveMeshBlocks workflows and reports source layout attachment details.
+- `mutable graph set-node-property` now preserves CustomizableObject pin links across node reconstruction.
+- `run-python-script` and `open-asset` now defer risky editor work to the Slate ticker and avoid immediate garbage collection paths that could crash editor workflows.
+- SoftUEBridge now builds against UE 5.8's `FJsonObject` shared-string key API while preserving older engine compatibility.
+
 ## [1.39.0] - 2026-06-20
 
 ### Added
