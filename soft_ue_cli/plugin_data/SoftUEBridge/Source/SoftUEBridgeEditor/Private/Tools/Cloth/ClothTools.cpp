@@ -231,14 +231,22 @@ bool BindClothAssetToSection(
 	if (UClothingAssetBase* CurrentAsset = Mesh->GetSectionClothingAsset(LodIndex, SectionIndex))
 	{
 		CurrentAsset->Modify();
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 8
 		CurrentAsset->UnbindFromSkeletalMesh(Mesh, LodIndex, SectionIndex);
+#else
+		CurrentAsset->UnbindFromSkeletalMesh(Mesh, LodIndex);
+#endif
 	}
 
 	Asset->Modify();
 	// Repair assets left with a populated LodMap but no section binding by older bridge versions.
 	if (bClearExistingAssetBindings)
 	{
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 8
 		Asset->UnbindFromSkeletalMesh(Mesh, LodIndex, INDEX_NONE);
+#else
+		Asset->UnbindFromSkeletalMesh(Mesh, LodIndex);
+#endif
 	}
 
 	FSkelMeshSection& Section = Mesh->GetImportedModel()->LODModels[LodIndex].Sections[SectionIndex];
@@ -1022,10 +1030,17 @@ bool ValidateConvertedChaosClothAsset(UChaosClothAsset* Asset, FString& OutError
 		return false;
 	}
 
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 8
 	if (Asset->HasDataflow() || Asset->HasValidClothSimulationModels() || HasChaosClothCollectionData(Asset))
 	{
 		return true;
 	}
+#else
+	if (Asset->HasValidClothSimulationModels() || HasChaosClothCollectionData(Asset))
+	{
+		return true;
+	}
+#endif
 
 	OutError = TEXT("cloth-convert: exporter produced an empty Chaos Cloth Asset");
 	return false;
@@ -2925,8 +2940,10 @@ FBridgeToolResult UClothConvertTool::Execute(const TSharedPtr<FJsonObject>& Argu
 
 	TSharedPtr<FJsonObject> Result = ChaosClothAssetToJson(NewAsset, OutputAssetPath, false);
 	Result->SetBoolField(TEXT("converted"), true);
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 8
 	Result->SetBoolField(TEXT("dataflow_based"), NewAsset->HasDataflow());
 	Result->SetStringField(TEXT("conversion_mode"), NewAsset->HasDataflow() ? TEXT("dataflow") : TEXT("legacy_collection"));
+#endif
 	Result->SetStringField(TEXT("skeletal_mesh"), SkeletalMeshPath);
 	Result->SetStringField(TEXT("source_asset_name"), SourceAsset->GetName());
 	Result->SetStringField(TEXT("output_asset"), OutputAssetPath);
