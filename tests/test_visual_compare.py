@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-
 from PIL import Image
 
 from soft_ue_cli.visual_compare import compare_umg_screenshots
-
 
 def test_compare_identical_images_scores_one(tmp_path):
     reference = tmp_path / "reference.png"
@@ -22,7 +20,6 @@ def test_compare_identical_images_scores_one(tmp_path):
     assert result["brightness_delta"] == 0.0
     assert len(result["layout_regions"]) == 9
     assert result["suggested_adjustments"] == []
-
 
 def test_compare_can_crop_captured_image_to_viewport(tmp_path):
     reference = tmp_path / "reference.png"
@@ -40,7 +37,6 @@ def test_compare_can_crop_captured_image_to_viewport(tmp_path):
     assert result["comparison_width"] == 4
     assert result["comparison_height"] == 4
     assert result["similarity_score"] == 1.0
-
 
 def test_compare_writes_annotated_diff(tmp_path):
     reference = tmp_path / "reference.png"

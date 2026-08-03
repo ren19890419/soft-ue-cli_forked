@@ -2,6 +2,7 @@
 
 #include "Tools/BridgeToolRegistry.h"
 #include "SoftUEBridgeModule.h"
+#include "Session/BridgeSessionRegistry.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -217,6 +218,10 @@ FBridgeToolResult FBridgeToolRegistry::ExecuteTool(
 	}
 
 	UE_LOG(LogSoftUEBridge, Log, TEXT("Executing tool: %s"), *ToolName);
+	// Heartbeat before Execute, so a tool that throws or trips the SEH handler
+	// still records that this session was alive. Nested batch entries touching
+	// twice is harmless.
+	FBridgeSessionRegistry::Get().Touch(Context, ToolName);
 	return Tool->Execute(Arguments, Context);
 }
 

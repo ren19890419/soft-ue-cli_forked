@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
 import sys
 from typing import Any, List, Optional
 
@@ -130,6 +131,10 @@ def _make_tool_fn(tool_name: str, params: dict | None = None):
     bridge_name = _BRIDGE_TOOL_NAME_MAP.get(tool_name, tool_name)
 
     def tool_fn(**kwargs: Any) -> str:
+        # Worker threads are pooled: drop any label a previous tool call left on
+        # this one, so identity never outlives the call that declared it.
+        _client.clear_session_label()
+
         # Filter out None and falsey defaults for store_true-style args, while
         # keeping explicit values that must be translated into bridge args.
         arguments = {k: v for k, v in kwargs.items() if v is not None}
@@ -169,7 +174,7 @@ def _make_tool_fn(tool_name: str, params: dict | None = None):
                 http_timeout = 90.0
 
         try:
-            result = _client.call_tool(bridge_name, arguments, timeout=http_timeout)
+            result, meta = _client.call_tool_ex(bridge_name, arguments, timeout=http_timeout)
         except BridgeError as exc:
             # If PIE startup times out, attempt a best-effort stop to avoid leaving
             # the editor in a partially-initialized session state.
@@ -184,6 +189,8 @@ def _make_tool_fn(tool_name: str, params: dict | None = None):
                 error_response["bug_report_hint"] = bug_nudge_payload(
                     exc.tool_name, exc.message,
                 )
+            if exc.notices:
+                error_response["session_notices"] = exc.notices
             return json.dumps(error_response, indent=2, ensure_ascii=False)
 
         if tool_name == "add-graph-node":
@@ -211,6 +218,9 @@ def _make_tool_fn(tool_name: str, params: dict | None = None):
         except Exception:
             pass
 
+        if meta.notices:
+            result["session_notices"] = meta.notices
+
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     tool_fn.__name__ = tool_name.replace(" ", "__").replace("-", "_")
@@ -236,9 +246,27 @@ def _make_client_tool_fn(tool_name: str, cmd_fn, params: dict | None = None, def
         if tool_name == "config" and hasattr(namespace, "subcommand") and not hasattr(namespace, "config_action"):
             namespace.config_action = namespace.subcommand
         buffer = io.StringIO()
+        err_buffer = io.StringIO()
         old_stdout = sys.stdout
+        old_stderr = sys.stderr
         sys.stdout = buffer
+        sys.stderr = err_buffer
         output = ""
+        # Same pooled-thread reset as _make_tool_fn: `session_as` reaches here as
+        # a tool parameter, and must not retarget any later call on this thread.
+        _client.clear_session_label()
+        # `announce` is the one leaf whose name means "this is who I am from here
+        # on" rather than "act as, for this call". An MCP agent has no shell to put
+        # SOFT_UE_SESSION in front of every command, so without this promotion its
+        # announce lands on the readable row and its `pie-session start` on the
+        # startup m-<uuid8> row. FastMCP passes every parameter, filled from the
+        # schema default when the caller omitted it, so an explicit value is one
+        # that differs from that default — never the $SOFT_UE_SESSION fallback.
+        if tool_name == "session announce":
+            declared = kwargs.get("session_as")
+            if declared and declared != option_defaults.get("session_as"):
+                _client.set_default_session_label(declared)
+        _client.begin_notice_capture()
         try:
             cmd_fn(namespace)
             output = buffer.getvalue().strip()
@@ -247,20 +275,34 @@ def _make_client_tool_fn(tool_name: str, cmd_fn, params: dict | None = None, def
                 output = json.dumps(normalized, indent=2, ensure_ascii=False)
         except SystemExit as exc:
             output = buffer.getvalue().strip()
+            reason = err_buffer.getvalue().strip()
+            _client.take_captured_notices()
             return output or json.dumps(
-                {"error": f"Command '{tool_name}' exited with code {exc.code}"},
+                {"error": reason or f"Command '{tool_name}' exited with code {exc.code}"},
                 indent=2,
             )
         except Exception as exc:
             output = buffer.getvalue().strip()
+            reason = err_buffer.getvalue().strip()
+            _client.take_captured_notices()
             return output or json.dumps(
-                {"error": f"Command '{tool_name}' failed: {exc}"},
+                {"error": reason or f"Command '{tool_name}' failed: {exc}"},
                 indent=2,
             )
         finally:
             sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
         output = output or buffer.getvalue().strip()
+        notices = _client.take_captured_notices()
+        if notices:
+            try:
+                payload = json.loads(output) if output else None
+            except (json.JSONDecodeError, TypeError):
+                payload = None
+            if isinstance(payload, dict):
+                payload["session_notices"] = notices
+                output = json.dumps(payload, indent=2, ensure_ascii=False)
         return output or json.dumps({"status": "ok"}, indent=2)
 
     tool_fn.__name__ = tool_name.replace(" ", "__").replace("-", "_")
@@ -274,6 +316,13 @@ def create_server():
     """Create and configure the MCP server with all tools and prompts."""
     from mcp.server.fastmcp import FastMCP
     from mcp.server.fastmcp.prompts import Prompt
+
+    import uuid
+
+    _client.set_client_kind("mcp")
+    _client.set_default_session_label(
+        os.environ.get("SOFT_UE_SESSION") or f"m-{uuid.uuid4().hex[:8]}"
+    )
 
     mcp = FastMCP("soft-ue-cli")
 

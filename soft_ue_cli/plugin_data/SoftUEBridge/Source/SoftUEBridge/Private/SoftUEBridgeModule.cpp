@@ -18,6 +18,7 @@
 #include "Tools/InspectAnimInstanceTool.h"
 #include "Tools/ReloadBridgeModuleTool.h"
 #include "Tools/TriggerInputTool.h"
+#include "Tools/SessionChannelTool.h"
 
 DEFINE_LOG_CATEGORY(LogSoftUEBridge);
 
@@ -42,6 +43,7 @@ void FSoftUEBridgeModule::StartupModule()
 	Registry.RegisterToolClass<UInspectAnimInstanceTool>();
 	Registry.RegisterToolClass<UReloadBridgeModuleTool>();
 	Registry.RegisterToolClass<UTriggerInputTool>();
+	Registry.RegisterToolClass<USessionChannelTool>();
 
 	UE_LOG(LogSoftUEBridge, Log, TEXT("Registered %d runtime bridge tools"), Registry.GetToolCount());
 }

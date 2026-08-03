@@ -3,6 +3,7 @@
 #include "Server/BridgeServer.h"
 #include "SoftUEBridgeModule.h"
 #include "Tools/BridgeToolRegistry.h"
+#include "Session/BridgeSessionRegistry.h"
 #include "HttpServerModule.h"
 #include "HttpPath.h"
 #include "Async/Async.h"
@@ -421,6 +422,18 @@ FBridgeResponse FBridgeServer::HandleToolsCall(const FBridgeRequest& Request)
 	Context.RequestId = Request.Id;
 	Context.ExecutionContext = FBridgeToolRegistry::Get().GetToolExecutionContext(ToolName);
 
+	// Who is calling. Sent by the CLI and the MCP server as params._session,
+	// a sibling of name/arguments so it never collides with tool arguments.
+	const TSharedPtr<FJsonObject>* SessionObj = nullptr;
+	if (Request.Params->TryGetObjectField(TEXT("_session"), SessionObj) && SessionObj)
+	{
+		(*SessionObj)->TryGetStringField(TEXT("id"), Context.SessionId);
+		(*SessionObj)->TryGetStringField(TEXT("label"), Context.SessionLabel);
+		(*SessionObj)->TryGetStringField(TEXT("origin"), Context.OriginId);
+		(*SessionObj)->TryGetStringField(TEXT("client"), Context.ClientKind);
+		(*SessionObj)->TryGetNumberField(TEXT("pid"), Context.ClientPid);
+	}
+
 	// Suppress modal dialogs during tool execution.  UE checks this flag in
 	// dialog code paths and auto-selects the default response instead of
 	// showing blocking UI.  Without this, modal dialogs (e.g. "Overwrite
@@ -444,7 +457,13 @@ FBridgeResponse FBridgeServer::HandleToolsCall(const FBridgeRequest& Request)
 	ToolResult = FBridgeToolRegistry::Get().ExecuteTool(ToolName, Arguments, Context);
 #endif
 
-	return FBridgeResponse::Success(Request.Id, ToolResult.ToJson());
+	// Drain here, not in FBridgeToolRegistry::ExecuteTool: batch-call re-enters
+	// ExecuteTool once per entry, so a registry-level drain would repeat every
+	// notice per entry, nested inside the stringified inner payloads. This is
+	// the one site that runs exactly once per response.
+	TSharedPtr<FJsonObject> ResultJson = ToolResult.ToJson();
+	FBridgeSessionRegistry::Get().DrainInto(Context, ResultJson);
+	return FBridgeResponse::Success(Request.Id, ResultJson);
 }
 
 void FBridgeServer::SendResponse(const FHttpResultCallback& OnComplete, const FBridgeResponse& Response, int32 StatusCode)

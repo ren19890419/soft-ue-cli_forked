@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _repo_root() -> Path:
     for parent in Path(__file__).resolve().parents:
@@ -41,25 +39,6 @@ def _plugin_root() -> Path:
     if monorepo_path.exists():
         return monorepo_path
     return root / "soft_ue_cli" / "plugin_data" / "SoftUEBridge"
-
-
-def _agent_guide_path() -> Path | None:
-    root = _repo_root()
-    for candidate in (
-        root / "AGENTS.md",
-        root.parent / "AGENTS.md",
-    ):
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def _skill_path(relative: str) -> Path:
-    root = _repo_root()
-    monorepo_path = root / "cli" / "soft_ue_cli" / "skills" / relative
-    if monorepo_path.exists():
-        return monorepo_path
-    return root / "soft_ue_cli" / "skills" / relative
 
 
 def test_editor_dependency_plugins_are_editor_target_only():
@@ -254,6 +233,25 @@ def test_build_and_relaunch_worker_writes_progress_status():
     assert "-Stage 'worker_error'" in source
 
 
+def test_build_and_relaunch_worker_skips_package_restore_prompt_before_relaunch():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Build/BuildAndRelaunchTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert 'Schema.Add(TEXT("skip_package_restore"), SkipPackageRestore)' in source
+    assert 'GetBoolArgOrDefault(Arguments, TEXT("skip_package_restore"), true)' in source
+    assert "PackageRestoreData.json" in source
+    assert "Move-Item -LiteralPath $PackageRestoreMarkerPath -Destination $BackupPath -Force" in source
+    assert "Could not move Unreal package restore marker before relaunch" in source
+    assert "Start-Process -FilePath $EditorExecutable" in source
+    assert source.index("Move-Item -LiteralPath $PackageRestoreMarkerPath") < source.index(
+        "Start-Process -FilePath $EditorExecutable"
+    )
+    assert source.index("Could not move Unreal package restore marker before relaunch") < source.index(
+        "Start-Process -FilePath $EditorExecutable"
+    )
+
+
 def test_bridge_reload_tool_is_runtime_registered_and_cleans_editor_tools():
     runtime_module = _plugin_source_path(
         "Source/SoftUEBridge/Private/SoftUEBridgeModule.cpp"
@@ -399,11 +397,7 @@ def test_bridge_registry_remove_tools_does_not_shadow_singleton_instance():
 
 
 def test_agent_guide_warns_new_tools_against_static_registration_macro():
-    guide_path = _agent_guide_path()
-    if guide_path is None:
-        pytest.skip("AGENTS.md is not exported in the public package repo")
-
-    guide = guide_path.read_text(encoding="utf-8")
+    guide = Path(__file__).parents[2].joinpath("AGENTS.md").read_text(encoding="utf-8")
 
     assert "Do not use REGISTER_BRIDGE_TOOL" in guide
     assert "RegisterToolClass" in guide
@@ -680,6 +674,251 @@ def test_anim_blueprint_and_pose_search_migration_tools_use_deferred_registratio
     assert "reindex_completed" in pose_source
 
 
+def test_blueprint_component_add_tool_registered_explicitly_and_sets_attach_socket():
+    module = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
+    ).read_text(encoding="utf-8")
+    header = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Public/Tools/Write/BlueprintComponentAddTool.h"
+    ).read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Write/BlueprintComponentAddTool.cpp"
+    ).read_text(encoding="utf-8")
+    startup_body = module.split("void FSoftUEBridgeEditorModule::StartupModule()", 1)[1].split(
+        "void FSoftUEBridgeEditorModule::ShutdownModule()", 1
+    )[0]
+
+    assert "Tools/Write/BlueprintComponentAddTool.h" in module
+    assert "Registry.RegisterToolClass<UBlueprintComponentAddTool>()" in module
+    assert "Registry.RegisterToolClass<UBlueprintComponentAddTool>()" not in startup_body
+    assert "REGISTER_BRIDGE_TOOL(UBlueprintComponentAddTool)" not in source
+    assert "blueprint-component-add" in header
+    assert "asset_path" in source
+    assert "component_class" in source
+    assert "attach_to" in source
+    assert "attach_socket" in source
+    assert "AttachToName" in source
+
+
+def test_cloth_tools_registered_explicitly_and_use_clothing_asset_apis():
+    module = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
+    ).read_text(encoding="utf-8")
+    header = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Public/Tools/Cloth/ClothTools.h"
+    ).read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "Tools/Cloth/ClothTools.h" in module
+    for cls in (
+        "UClothQueryTool",
+        "UClothCreateTool",
+        "UClothBindTool",
+        "UClothSetConfigTool",
+        "UClothWeldTool",
+        "UClothApplyWeightMapTool",
+        "UClothSetCollisionTool",
+        "UClothChaosQueryTool",
+        "UClothConvertTool",
+        "UClothChaosStitchTool",
+        "UClothChaosSetConfigTool",
+    ):
+        assert f"Registry.RegisterToolClass<{cls}>()" in module
+        assert f"REGISTER_BRIDGE_TOOL({cls})" not in source
+
+    assert "cloth-query" in header
+    assert "cloth-chaos-query" in header
+    assert "cloth-convert" in header
+    assert "cloth-chaos-stitch" in header
+    assert "cloth-chaos-set-config" in header
+    assert "cloth-create" in header
+    assert "cloth-weld" in header
+    assert "cloth-apply-weightmap" in header
+    assert "GetAllMeshClothingAssetBindings" in source
+    assert "CreateFromSkeletalMesh" in source
+    assert "BindToSkeletalMesh" in source
+    assert "ApplyParameterMasks" in source
+    assert "EWeightMapTargetCommon::MaxDistance" in source
+    assert "EWeightMapTargetCommon::AnimDriveStiffness" in source
+    assert "EWeightMapTargetCommon::AnimDriveDamping_DEPRECATED" in source
+    assert "EWeightMapTargetCommon::BackstopDistance" in source
+    assert "EWeightMapTargetCommon::BackstopRadius" in source
+    assert "ResolveLegacyWeightMapTarget" in source
+    assert "bone-distance" in source
+    assert "spatial" in source
+    assert "FindBoneIndex" in source
+    assert "root_bone is required" in source
+    assert "ApplyFalloffCurve" in source
+    assert "BuildSpatialWeightMapValues" in source
+    assert "ApplyLegacyWeightMapToLodData" in source
+    assert "PreviewLodData" in source
+    assert "GenerateLegacyClothRenderMappings" in source
+    assert "RestorePhysicalOnlyLegacyClothWeightMaps" in source
+    assert "ApplyParameterMasks(false)" in source
+    assert "ApplyLegacyClothRenderMappings(Mesh, Asset, GeneratedMappings, false)" in source
+    assert "PointWeightMap.bEnabled" in source
+    assert "remove_from_mesh cannot be combined with bind" in source
+    assert "return FBridgeToolResult::Error(SaveError)" in source
+
+
+def test_cloth_weld_compacts_legacy_physical_mesh_and_rebuilds_render_mapping():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "UClothWeldTool" in source
+    assert "WeldLegacyPhysicalMeshVertices" in source
+    assert "BuildLegacyClothWeldSelection" in source
+    assert "RemapLegacyClothWeightMaps" in source
+    assert "RestorePhysicalOnlyLegacyClothWeightMaps" in source
+    assert "GenerateLegacyClothRenderMappings" in source
+    assert "ApplyLegacyClothRenderMappings" in source
+    assert "ClothingMeshUtils::GenerateMeshToMeshVertData" in source
+    assert "PreviewLodData" in source
+    assert "weld selection did not match any physical mesh vertices" in source
+    assert "weld removed all physical mesh triangles" in source
+    assert "MappingData.Num() != RenderPositions.Num()" in source
+    assert '"ChaosCore"' in _plugin_source_path("Source/SoftUEBridgeEditor/SoftUEBridgeEditor.Build.cs").read_text(encoding="utf-8")
+    assert "welded_vertex_count" in source
+    assert "removed_degenerate_triangle_count" in source
+    assert "ApplyParameterMasks(true)" in source
+
+
+def test_cloth_chaos_query_uses_chaos_cloth_asset_facades():
+    build_cs = _plugin_source_path("Source/SoftUEBridgeEditor/SoftUEBridgeEditor.Build.cs").read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert '"ChaosClothAsset"' in build_cs
+    assert '"ChaosClothAssetEngine"' in build_cs
+    assert '"DataflowEngine"' in build_cs
+    assert "UChaosClothAsset" in source
+    assert "FCollectionClothConstFacade" in source
+    assert "GetNumSimVertices3D" in source
+    assert "GetNumRenderVertices" in source
+    assert "GetWeightMapNames" in source
+    assert "GetNumSeams" in source
+    assert "GetNumSeamStitches" in source
+    assert "GetDataflowInstance" in source
+    assert "BuildChaosClothGapDiagnostics" in source
+    assert "gap_candidates" in source
+    assert "MaxChaosGapDistanceChecks" in source
+    assert "truncated" in source
+    assert "DumpChaosClothWeightMapVertices" in source
+    assert "is_kinematic" in source
+
+
+def test_cloth_convert_uses_chaos_cloth_asset_exporter_provider():
+    build_cs = _plugin_source_path("Source/SoftUEBridgeEditor/SoftUEBridgeEditor.Build.cs").read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert '"ClothPainter"' in build_cs
+    assert '"ChaosClothAssetTools"' in build_cs
+    assert "IClothingAssetExporterClassProvider" in source
+    assert "IClothingAssetExporterClassProvider::FeatureName" in source
+    assert "LoadModuleChecked" in source
+    assert "UClothingAssetExporter" in source
+    assert "UChaosClothAsset::StaticClass()" in source
+    assert "FPackageName::DoesPackageExist(PackageName" in source
+    assert "OutputChaosClothAssetExists" in source
+    assert "ValidateConvertedChaosClothAsset" in source
+    assert "HasChaosClothCollectionData" in source
+    assert "exporter produced an empty Chaos Cloth Asset" in source
+    assert "AssetCreated" in source
+    assert source.index("ValidateConvertedChaosClothAsset(NewAsset") < source.index("FAssetRegistryModule::AssetCreated(NewAsset)")
+    assert "dataflow_based" in source
+    assert "conversion_mode" in source
+    assert "preserved" in source
+
+
+def test_cloth_chaos_stitch_uses_seam_facade_and_compacts_mesh():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "UClothChaosStitchTool" in source
+    assert "FCollectionClothSeamFacade" in source
+    assert "AddGetSeam" in source
+    assert "Seam.Initialize" in source
+    assert "FClothGeometryTools::CleanupAndCompactMesh" in source
+    assert "OriginalCollections" in source
+    assert "Build(OriginalCollections" in source
+    assert "stitches_created" in source
+    assert "welded_sim_vertex_count" in source
+    assert "dry_run" in source
+    assert "candidate_pairs" in source
+    assert "selection_distance" in source
+    assert "distance_space" in source
+
+
+def test_cloth_chaos_set_weightmap_tool_registered_and_mutates_collection_weight_maps():
+    header = _plugin_source_path("Source/SoftUEBridgeEditor/Public/Tools/Cloth/ClothTools.h").read_text(encoding="utf-8")
+    module = _plugin_source_path("Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp").read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "UClothChaosSetWeightMapTool" in header
+    assert "cloth-chaos-set-weightmap" in header
+    assert "RegisterToolClass<UClothChaosSetWeightMapTool>" in module
+    assert "SelectChaosWeightMapVertices" in source
+    assert "FindOrAddWeightMap" in source
+    assert "SetWeightMap" in source
+    assert "changed_vertex_count" in source
+
+
+def test_cloth_chaos_set_config_uses_collection_property_facade():
+    build_cs = _plugin_source_path("Source/SoftUEBridgeEditor/SoftUEBridgeEditor.Build.cs").read_text(encoding="utf-8")
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert '"Chaos"' in build_cs
+    assert "UClothChaosSetConfigTool" in source
+    assert "Chaos/CollectionPropertyFacade.h" in source
+    assert "FCollectionPropertyFacade" in source
+    assert "SetWeightedFloatValue" in source
+    assert "SetLowValue" in source
+    assert "SetHighValue" in source
+    assert "changed_property_count" in source
+
+
+def test_cloth_bind_persists_original_section_user_data_and_repairs_stale_lod_map():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "BindClothAssetToSection" in source
+    assert "FScopedSkeletalMeshPostEditChange BindingPostEditChange(Mesh)" in source
+    assert "Asset->UnbindFromSkeletalMesh(Mesh, LodIndex, INDEX_NONE)" in source
+    assert "UserSectionsData.FindOrAdd" in source
+    assert "OriginalSectionData.CorrespondClothAssetIndex" in source
+    assert "OriginalSectionData.ClothingData.AssetGuid" in source
+    assert "OriginalSectionData.ClothingData.AssetLodIndex" in source
+
+
+def test_cloth_create_supports_welded_multi_section_assets():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Cloth/ClothTools.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "section_indices" in source
+    assert "BuildMergedClothLodFromSections" in source
+    assert "BindClothAssetToSections" in source
+    assert "UniquePositions" in source
+    assert "SectionLocalToMerged" in source
+    assert "CommonAsset->LodMap[LodIndex] = INDEX_NONE" in source
+    assert "weld_tolerance" in source
+    assert "WeldToleranceSquared" in source
+    assert "UniquePositionSectionIndices" in source
+    assert "bSameSourceSection ? SMALL_NUMBER : WeldToleranceSquared" in source
+
+
 def test_metasound_inspect_tool_uses_deferred_registration():
     module = _plugin_source_path(
         "Source/SoftUEBridgeEditor/Private/SoftUEBridgeEditorModule.cpp"
@@ -723,11 +962,7 @@ def test_bridge_health_includes_process_identity_for_restart_detection():
 
 
 def test_agent_guide_requires_deferred_registration_for_new_uclass_tools():
-    guide_path = _agent_guide_path()
-    if guide_path is None:
-        pytest.skip("AGENTS.md is not exported in the public package repo")
-
-    guide = guide_path.read_text(encoding="utf-8")
+    guide = Path(__file__).parents[2].joinpath("AGENTS.md").read_text(encoding="utf-8")
 
     assert "OnPostEngineInit" in guide
     assert "newly added UCLASS" in guide
@@ -907,6 +1142,15 @@ def test_pie_session_start_uses_slate_ticker_and_nonblocking_diagnostics():
     assert "transition_age_seconds" in source
 
 
+def test_pie_session_includes_transactor_for_contains_pie_objects():
+    source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/PIE/PieSessionTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert '#include "Editor/Transactor.h"' in source
+    assert "ContainsPieObjects" in source
+
+
 def test_create_asset_widget_blueprint_honors_parent_class():
     source = _plugin_source_path(
         "Source/SoftUEBridgeEditor/Private/Tools/Write/CreateAssetTool.cpp"
@@ -976,7 +1220,7 @@ def test_set_node_position_supports_customizable_object_graphs():
 
 
 def test_live_smoke_skill_expects_slot_wiring_macro():
-    content = _skill_path("test-tools.md").read_text(encoding="utf-8")
+    content = (_repo_root() / "cli" / "soft_ue_cli" / "skills" / "test-tools.md").read_text(encoding="utf-8")
 
     assert "wire-customizable-object-slot-from-table" in content
     assert "run-python-script argv args" in content
@@ -1226,6 +1470,9 @@ def test_umg_workflow_tools_are_explicitly_registered_and_support_runtime_contra
     assert "TWeakObjectPtr<UUserWidget>" in preview_registry_source
     assert "FWidgetPreviewRegistry::RemovePreviewsForWorld" in pie_source
     assert "cleanup_tool_previews" in pie_source
+    assert "ContainsPieObjects" in pie_source
+    assert "ResetTransaction" in pie_source
+    assert "cleared_pie_transactions" in pie_source
 
     assert "UUserWidget" in inspect_source
     assert "WidgetTree->RootWidget" in inspect_source
@@ -1251,6 +1498,19 @@ def test_umg_runtime_lookup_includes_tool_owned_preview_registry():
     assert "FWidgetPreviewRegistry::CollectPreviewWidgetsForWorld" in inspect_source
     assert "Runtime root widget not found" in verify_source
     assert "current tool previews" in verify_source
+
+
+def test_umg_preview_cleanup_releases_slate_before_replacing_preview():
+    preview_registry_source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Widget/WidgetPreviewRegistry.cpp"
+    ).read_text(encoding="utf-8")
+    verify_source = _plugin_source_path(
+        "Source/SoftUEBridgeEditor/Private/Tools/Widget/VerifyUMGWorkflowTool.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "ReleaseSlateResources(true)" in preview_registry_source
+    assert "FlushRenderState" in preview_registry_source
+    assert "PreviewLifecycle == TEXT(\"replace\")" in verify_source
 
 
 def test_umg_preview_tool_applies_viewport_layout_controls():

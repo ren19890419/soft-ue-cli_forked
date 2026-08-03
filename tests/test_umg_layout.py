@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-
 def test_normalize_layout_extracts_widget_bounds_and_contract():
     from soft_ue_cli.umg_layout import normalize_layout
 
@@ -30,7 +29,6 @@ def test_normalize_layout_extracts_widget_bounds_and_contract():
     assert widget["normalized_bounds"] == [0.0625, 0.7037, 0.1354, 0.0667]
     assert widget["z_order"] == 20
     assert widget["opacity"] == 0.75
-
 
 def test_normalize_layout_flattens_runtime_root_widgets_tree():
     from soft_ue_cli.umg_layout import normalize_layout
@@ -66,7 +64,6 @@ def test_normalize_layout_flattens_runtime_root_widgets_tree():
     assert [widget["name"] for widget in layout["widgets"]] == ["WBP_Menu_C_0", "StartButton"]
     assert layout["widgets"][1]["bounds"] == [120, 320, 240, 72]
     assert layout["widgets"][1]["normalized_bounds"] == [0.12, 0.64, 0.24, 0.144]
-
 
 def test_normalize_layout_computes_designer_canvas_slot_bounds_from_anchors():
     from soft_ue_cli.umg_layout import normalize_layout
@@ -112,7 +109,6 @@ def test_normalize_layout_computes_designer_canvas_slot_bounds_from_anchors():
     assert widgets["StretchedPanel"]["bounds"] == [110, 120, 760, 240]
     assert widgets["StretchedPanel"]["normalized_bounds"] == [0.11, 0.24, 0.76, 0.48]
 
-
 def test_normalize_layout_uses_canvas_slot_when_explicit_bounds_are_zero():
     from soft_ue_cli.umg_layout import normalize_layout
 
@@ -140,7 +136,6 @@ def test_normalize_layout_uses_canvas_slot_when_explicit_bounds_are_zero():
     widget = layout["widgets"][0]
     assert widget["bounds"] == [120, 760, 260, 72]
     assert widget["normalized_bounds"] == [0.0625, 0.7037, 0.1354, 0.0667]
-
 
 def test_compare_layouts_reports_bounds_z_order_and_opacity_deltas():
     from soft_ue_cli.umg_layout import compare_layouts
@@ -175,7 +170,6 @@ def test_compare_layouts_reports_bounds_z_order_and_opacity_deltas():
     assert report["deltas"][0]["kind"] == "bounds"
     assert {finding["kind"] for finding in report["findings"]} >= {"bounds", "z_order", "opacity"}
 
-
 def test_compare_layouts_round_trips_json_files(tmp_path):
     from soft_ue_cli.umg_layout import compare_layouts
 
@@ -188,7 +182,6 @@ def test_compare_layouts_round_trips_json_files(tmp_path):
 
     assert report["success"] is True
     assert report["summary"]["missing_widgets"] == 0
-
 
 def test_compare_layouts_subset_ignores_decorative_actual_widgets():
     from soft_ue_cli.umg_layout import compare_layouts
@@ -211,7 +204,6 @@ def test_compare_layouts_subset_ignores_decorative_actual_widgets():
     assert report["summary"]["extra_widgets"] == 0
     assert report["summary"]["ignored_extra_widgets"] == 1
 
-
 def test_extract_concept_image_layout_detects_foreground_regions(tmp_path):
     from PIL import Image, ImageDraw
 
@@ -230,7 +222,6 @@ def test_extract_concept_image_layout_detects_foreground_regions(tmp_path):
     assert layout["widgets"][0]["role"] == "region"
     assert layout["widgets"][0]["bounds"] == [20, 10, 40, 20]
     assert layout["widgets"][0]["normalized_bounds"] == [0.2, 0.125, 0.4, 0.25]
-
 
 def test_fit_layout_to_spec_adjusts_canvas_slot_position():
     from soft_ue_cli.umg_layout import fit_layout_to_spec

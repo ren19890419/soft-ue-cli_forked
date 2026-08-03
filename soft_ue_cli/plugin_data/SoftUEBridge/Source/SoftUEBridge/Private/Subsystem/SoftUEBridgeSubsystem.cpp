@@ -2,6 +2,7 @@
 
 #include "Subsystem/SoftUEBridgeSubsystem.h"
 #include "Server/BridgeServer.h"
+#include "Session/BridgeSessionRegistry.h"
 #include "SoftUEBridgeModule.h"
 #include "Tools/GetLogsTool.h"
 #include "HttpServerModule.h"
@@ -129,6 +130,12 @@ bool USoftUEBridgeSubsystem::StartServer(int32 Port)
 		{
 			Server = MoveTemp(Candidate);
 			WriteInstanceRegistry(TryPort);
+			// No Rehydrate() here on purpose. sessions.json is not written alongside
+			// instance.json -- instance.json is deleted on stop and session records
+			// must survive that -- but rehydrating here would be worse than useless:
+			// FBridgeSessionRegistry::Get() already rehydrates once on first access,
+			// and RestartServer() reaches this line inside a still-running editor,
+			// where Rehydrate marks every live record ended and empties the roster.
 			UE_LOG(LogSoftUEBridge, Log, TEXT("Bridge server listening on http://127.0.0.1:%d/bridge"), TryPort);
 			return true;
 		}
@@ -146,6 +153,9 @@ void USoftUEBridgeSubsystem::StopServer()
 	{
 		Server->Stop();
 		DeleteInstanceRegistry();
+		// instance.json goes, sessions.json stays: a session that outlives this
+		// editor still has something to read.
+		FBridgeSessionRegistry::Get().Flush();
 	}
 }
 

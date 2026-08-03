@@ -15,7 +15,6 @@ from soft_ue_cli.startup_recovery import (
     startup_recovery_settings_path,
 )
 
-
 def _prompt() -> StartupRecoveryPrompt:
     return StartupRecoveryPrompt(
         hwnd=10,
@@ -28,7 +27,6 @@ def _prompt() -> StartupRecoveryPrompt:
         },
     )
 
-
 def test_startup_recovery_settings_are_project_local(tmp_path, monkeypatch):
     (tmp_path / "Game.uproject").write_text("{}", encoding="utf-8")
     child = tmp_path / "Content" / "Maps"
@@ -38,7 +36,6 @@ def test_startup_recovery_settings_are_project_local(tmp_path, monkeypatch):
     path = startup_recovery_settings_path()
 
     assert path == tmp_path / ".soft-ue-bridge" / "settings.json"
-
 
 def test_startup_recovery_missing_choice_blocks_unattended(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -53,7 +50,6 @@ def test_startup_recovery_missing_choice_blocks_unattended(tmp_path, monkeypatch
     assert "startup recovery prompt" in str(exc.value).lower()
     assert "recover" in str(exc.value).lower()
     assert "skip" in str(exc.value).lower()
-
 
 def test_startup_recovery_uses_remembered_recover_choice(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -71,7 +67,6 @@ def test_startup_recovery_uses_remembered_recover_choice(tmp_path, monkeypatch):
     assert result is not None
     assert result.action == "recover"
     assert result.remembered is True
-
 
 def test_startup_recovery_interactive_skip_can_be_remembered(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -94,7 +89,6 @@ def test_startup_recovery_interactive_skip_can_be_remembered(tmp_path, monkeypat
     assert load_startup_recovery_action() == "skip"
     settings = json.loads(startup_recovery_settings_path().read_text(encoding="utf-8"))
     assert settings["startup_recovery_action"] == "skip"
-
 
 def test_startup_recovery_manual_leaves_prompt_for_user(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

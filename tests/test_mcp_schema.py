@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-
 import pytest
 
 from soft_ue_cli.mcp_schema import CLIENT_SIDE_COMMANDS, EXCLUDED_COMMANDS, extract_tools
 
-
 def test_extract_tools_returns_nonempty():
     tools = extract_tools()
     assert len(tools) > 0
-
 
 def test_extract_tools_excludes_blocked_commands():
     tools = extract_tools()
     tool_names = {t["name"] for t in tools}
     for excluded in EXCLUDED_COMMANDS:
         assert excluded not in tool_names, f"{excluded} should be excluded"
-
 
 def test_extract_tools_contains_known_command():
     tools = extract_tools()
@@ -55,6 +51,12 @@ def test_extract_tools_contains_known_command():
     assert "umg runtime inspect" in tool_names
     assert "status" in tool_names
     assert "commands" in tool_names
+    assert "mcp-surface-status" in tool_names
+    assert "runtime readiness" in tool_names
+    assert "runtime binary plan-install" in tool_names
+    assert "runtime binary plan-update" in tool_names
+    assert "runtime binary plan-rollback" in tool_names
+    assert "runtime smoke-plan" in tool_names
     assert "wait-for-ready" in tool_names
     assert "anim sync-marker inspect" in tool_names
     assert "anim sync-marker compare" in tool_names
@@ -62,7 +64,6 @@ def test_extract_tools_contains_known_command():
     assert "anim sync-marker remove" in tool_names
     assert "query-blueprint" in tool_names
     assert "capture-viewport" in tool_names
-
 
 def test_extract_tools_exposes_removed_flat_aliases():
     tool_names = {t["name"] for t in extract_tools()}
@@ -77,7 +78,6 @@ def test_extract_tools_exposes_removed_flat_aliases():
     ):
         assert alias in tool_names
 
-
 def test_capture_screenshot_schema_default_mode_is_viewport():
     tools = {t["name"]: t for t in extract_tools()}
     tool = tools["capture-screenshot"]
@@ -85,16 +85,13 @@ def test_capture_screenshot_schema_default_mode_is_viewport():
     assert tool["parameters"]["properties"]["mode"]["default"] == "viewport"
     assert "mode" not in tool["parameters"].get("required", [])
 
-
 def test_nested_metasound_family_root_is_not_auto_exposed_to_mcp():
     assert "metasound" in EXCLUDED_COMMANDS
-
 
 def test_metasound_inspect_leaf_is_exposed_to_mcp():
     tool = next(t for t in extract_tools() if t["name"] == "metasound inspect")
     assert "asset_path" in tool["parameters"]["properties"]
     assert "asset_path" in tool["parameters"].get("required", [])
-
 
 def test_capture_pie_screenshot_schema_defaults_to_pie_window():
     tools = {t["name"]: t for t in extract_tools()}
@@ -110,13 +107,11 @@ def test_capture_pie_screenshot_schema_defaults_to_pie_window():
         "pie-window",
     ]
 
-
 def test_pie_tick_schema_exposes_timeout_parameter():
     tools = {t["name"]: t for t in extract_tools()}
     tool = tools["pie-tick"]
     assert tool["parameters"]["properties"]["timeout"]["type"] == "number"
     assert "timeout" not in tool["parameters"].get("required", [])
-
 
 def test_call_function_mcp_schema_matches_bridge_contract():
     tools = {t["name"]: t for t in extract_tools()}
@@ -129,7 +124,6 @@ def test_call_function_mcp_schema_matches_bridge_contract():
     assert "batch_json" not in params["properties"]
     assert "output" not in params["properties"]
 
-
 def test_config_bridge_schemas_match_string_only_bridge_contract():
     tools = {t["name"]: t for t in extract_tools()}
 
@@ -139,7 +133,6 @@ def test_config_bridge_schemas_match_string_only_bridge_contract():
 
     assert tools["set-config-value"]["parameters"]["properties"]["value"]["type"] == "string"
 
-
 def test_tool_has_required_fields():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "spawn-actor")
@@ -147,23 +140,21 @@ def test_tool_has_required_fields():
     assert "description" in tool
     assert "parameters" in tool
 
-
 def test_commands_is_client_side_tool():
     assert "commands" in CLIENT_SIDE_COMMANDS
 
+def test_mcp_surface_status_is_client_side_tool():
+    assert "mcp-surface-status" in CLIENT_SIDE_COMMANDS
 
 def test_nested_umg_family_root_is_not_auto_exposed_to_mcp():
     assert "umg" in EXCLUDED_COMMANDS
 
-
 def test_nested_capture_family_root_is_not_auto_exposed_to_mcp():
     assert "capture" in EXCLUDED_COMMANDS
 
-
 def test_nested_taxonomy_family_roots_are_not_auto_exposed_to_mcp():
-    for family in ["mutable", "statetree", "anim", "asset", "blueprint"]:
+    for family in ["mutable", "statetree", "anim", "asset", "blueprint", "runtime", "cloth"]:
         assert family in EXCLUDED_COMMANDS
-
 
 def test_canonical_leaf_commands_are_exposed_to_mcp():
     tool_names = {t["name"] for t in extract_tools()}
@@ -176,9 +167,12 @@ def test_canonical_leaf_commands_are_exposed_to_mcp():
         "anim rewind status",
         "asset query",
         "blueprint node add",
+        "cloth query",
+        "cloth apply-weightmap",
+        "cloth weld",
+        "cloth chaos-set-weightmap",
     ]:
         assert name in tool_names
-
 
 def test_positional_arg_is_required():
     tools = extract_tools()
@@ -187,7 +181,6 @@ def test_positional_arg_is_required():
     assert "actor_class" in params["properties"]
     assert "actor_class" in params.get("required", [])
 
-
 def test_optional_arg_is_not_required():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "spawn-actor")
@@ -195,13 +188,11 @@ def test_optional_arg_is_not_required():
     assert "location" in params["properties"]
     assert "location" not in params.get("required", [])
 
-
 def test_int_type_maps_to_integer():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "query-level")
     params = tool["parameters"]
     assert params["properties"]["limit"]["type"] == "integer"
-
 
 def test_world_options_are_exposed_for_level_actor_property_queries():
     tools = extract_tools()
@@ -211,20 +202,17 @@ def test_world_options_are_exposed_for_level_actor_property_queries():
     assert query_level["parameters"]["properties"]["world"]["enum"] == ["editor", "pie", "game"]
     assert get_property["parameters"]["properties"]["world"]["enum"] == ["editor", "pie", "game"]
 
-
 def test_store_true_maps_to_boolean():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "blueprint inspect")
     params = tool["parameters"]
     assert params["properties"]["no_detail"]["type"] == "boolean"
 
-
 def test_set_property_value_override_maps_to_any():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "set-property")
     params = tool["parameters"]
     assert params["properties"]["value"]["type"] == "any"
-
 
 def test_customizable_object_edit_schema_uses_native_json_types():
     tools = extract_tools()
@@ -257,7 +245,6 @@ def test_customizable_object_edit_schema_uses_native_json_types():
     assert slot_params["filter_values"]["type"] == "array"
     assert slot_params["node_position"]["type"] == "array"
 
-
 def test_apply_widget_tree_schema_uses_native_json_types():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "umg designer apply")
@@ -270,7 +257,6 @@ def test_apply_widget_tree_schema_uses_native_json_types():
     assert params["properties"]["save"]["type"] == "boolean"
     assert params["properties"]["checkout"]["type"] == "boolean"
     assert "asset_path" in params.get("required", [])
-
 
 def test_umg_workflow_schema_uses_native_json_types():
     tools = extract_tools()
@@ -301,7 +287,6 @@ def test_umg_workflow_schema_uses_native_json_types():
     assert iterate["parameters"]["properties"]["capture"]["type"] == "boolean"
     assert iterate["parameters"]["properties"]["max_iterations"]["type"] == "integer"
     assert "concept_layout" in iterate["parameters"].get("required", [])
-
 
 def test_visual_capture_schema_exposes_safe_pie_and_compare_options():
     tools = extract_tools()
@@ -340,7 +325,6 @@ def test_visual_capture_schema_exposes_safe_pie_and_compare_options():
     assert preview_props["viewport_position"]["type"] == "array"
     assert preview_props["viewport_size"]["type"] == "array"
     assert preview_props["viewport_alignment"]["type"] == "array"
-
 
 def test_animation_graph_and_sync_marker_schema_uses_native_json_types():
     tools = extract_tools()
@@ -420,7 +404,6 @@ def test_animation_graph_and_sync_marker_schema_uses_native_json_types():
     assert "asset_paths" in asset_repoint_params.get("required", [])
     assert "replacement_map" in asset_repoint_params.get("required", [])
 
-
 def test_run_python_script_schema_exposes_unsafe_python_call_override():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "run-python-script")
@@ -429,6 +412,38 @@ def test_run_python_script_schema_exposes_unsafe_python_call_override():
     assert params["properties"]["allow_unsafe_python_calls"]["type"] == "boolean"
     assert params["properties"]["script_args"]["type"] == "array"
 
+def test_cloth_chaos_set_weightmap_schema_uses_native_json_selection_types():
+    tools = extract_tools()
+    tool = next(t for t in tools if t["name"] == "cloth chaos-set-weightmap")
+    params = tool["parameters"]
+
+    assert params["properties"]["vertices"]["type"] == "array"
+    assert params["properties"]["center"]["type"] == "array"
+    assert params["properties"]["value"]["type"] == "number"
+
+def test_cloth_weld_schema_uses_native_json_center_type():
+    tools = extract_tools()
+    tool = next(t for t in tools if t["name"] == "cloth weld")
+    params = tool["parameters"]
+
+    assert params["properties"]["center"]["type"] == "array"
+    assert params["properties"]["tolerance"]["type"] == "number"
+
+def test_cloth_apply_weightmap_schema_uses_native_json_center_type():
+    tools = extract_tools()
+    tool = next(t for t in tools if t["name"] == "cloth apply-weightmap")
+    params = tool["parameters"]
+
+    assert params["properties"]["target"]["enum"] == [
+        "max-distance",
+        "anim-drive-stiffness",
+        "anim-drive-damping",
+        "backstop-distance",
+        "backstop-radius",
+    ]
+    assert params["properties"]["center"]["type"] == "array"
+    assert params["properties"]["min_value"]["type"] == "number"
+    assert params["properties"]["max_value"]["type"] == "number"
 
 def test_pie_session_schema_exposes_blueprint_compile_error_policy():
     tools = extract_tools()
@@ -439,7 +454,6 @@ def test_pie_session_schema_exposes_blueprint_compile_error_policy():
     assert action["enum"] == ["modal", "report", "cancel", "continue"]
     assert params["properties"]["preflight_blueprints"]["type"] == "boolean"
     assert params["properties"]["continue_on_blueprint_compile_errors"]["type"] == "boolean"
-
 
 def test_customizable_object_convenience_commands_run_client_side_for_mcp():
     for command in {
@@ -458,13 +472,11 @@ def test_customizable_object_convenience_commands_run_client_side_for_mcp():
     }:
         assert command in CLIENT_SIDE_COMMANDS
 
-
 def test_visual_compare_command_runs_client_side_for_mcp():
     assert "capture screenshot" in CLIENT_SIDE_COMMANDS
     assert "capture viewport" in CLIENT_SIDE_COMMANDS
     assert "umg layout extract" in CLIENT_SIDE_COMMANDS
     assert "umg layout compare" in CLIENT_SIDE_COMMANDS
-
 
 def test_choices_map_to_enum():
     tools = extract_tools()
@@ -472,7 +484,6 @@ def test_choices_map_to_enum():
     params = tool["parameters"]
     severity = params["properties"]["severity"]
     assert "enum" in severity
-
 
 def test_feedback_tools_include_privacy_guidance():
     tools = extract_tools()
@@ -492,20 +503,17 @@ def test_feedback_tools_include_privacy_guidance():
     assert "any clue that could identify your project" in feature_desc
     assert "generic placeholders" in feature_use_case
 
-
 def test_help_text_becomes_description():
     tools = extract_tools()
     tool = next(t for t in tools if t["name"] == "spawn-actor")
     params = tool["parameters"]
     assert "description" in params["properties"]["actor_class"]
 
-
 def test_tool_count_is_reasonable():
     """Should have a stable, non-trivial tool count after exclusions."""
     tools = extract_tools()
     assert len(tools) >= 60
-    assert len(tools) <= 230
-
+    assert len(tools) <= 260
 
 def test_skeletal_socket_tools_are_exposed():
     tools = extract_tools()
@@ -513,25 +521,45 @@ def test_skeletal_socket_tools_are_exposed():
     assert "asset skeletal-socket create" in tool_names
     assert "asset skeletal-socket remove" in tool_names
 
-
 def test_skills_excluded():
     tools = extract_tools()
     tool_names = {t["name"] for t in tools}
     assert "skills" not in tool_names
-
 
 def test_mcp_serve_excluded():
     tools = extract_tools()
     tool_names = {t["name"] for t in tools}
     assert "mcp-serve" not in tool_names
 
-
 # -- CLI parser ----------------------------------------------------------------
 
 from soft_ue_cli.__main__ import build_parser
-
 
 def test_parser_mcp_serve():
     parser = build_parser()
     args = parser.parse_args(["mcp-serve"])
     assert args.command == "mcp-serve"
+
+def test_session_leaves_become_separate_mcp_tools():
+    names = {tool["name"] for tool in extract_tools()}
+
+    assert "session announce" in names
+    assert "session list" in names
+    assert "session ask" in names
+    assert "session" not in names
+
+def test_session_leaf_descriptions_are_not_the_bare_prog():
+    """Every session leaf needs a real `description=`, not the argparse fallback.
+
+    `_iter_nested_leaf_commands` falls back to `parser.prog` for a nested leaf with
+    no description, and never consults `help=`. A model choosing between these tools
+    would see only the string 'soft-ue-cli session leave'.
+    """
+    leaves = [t for t in extract_tools() if t["name"].startswith("session ")]
+    assert len(leaves) == 7
+
+    for tool in leaves:
+        description = tool.get("description") or ""
+        prog = f"soft-ue-cli {tool['name']}"
+        assert description.strip() != prog, f"{tool['name']} description is its prog"
+        assert len(description) > len(prog), f"{tool['name']} description too thin"

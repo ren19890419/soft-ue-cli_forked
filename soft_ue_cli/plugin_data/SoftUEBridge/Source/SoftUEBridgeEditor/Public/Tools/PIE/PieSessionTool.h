@@ -29,8 +29,10 @@ public:
 		const FBridgeToolContext& Context) override;
 
 private:
-	FBridgeToolResult ExecuteStart(const TSharedPtr<FJsonObject>& Arguments);
-	FBridgeToolResult ExecuteStop(const TSharedPtr<FJsonObject>& Arguments);
+	// start and stop take the context so they can claim and release the 'pie'
+	// resource for the calling session; the read-only actions do not need it.
+	FBridgeToolResult ExecuteStart(const TSharedPtr<FJsonObject>& Arguments, const FBridgeToolContext& Context);
+	FBridgeToolResult ExecuteStop(const TSharedPtr<FJsonObject>& Arguments, const FBridgeToolContext& Context);
 	FBridgeToolResult ExecutePause(const TSharedPtr<FJsonObject>& Arguments);
 	FBridgeToolResult ExecuteResume(const TSharedPtr<FJsonObject>& Arguments);
 	FBridgeToolResult ExecuteGetState(const TSharedPtr<FJsonObject>& Arguments);

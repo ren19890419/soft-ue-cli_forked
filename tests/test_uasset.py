@@ -8,10 +8,8 @@ import struct
 from soft_ue_cli.uasset.properties import read_property_tag, read_tagged_properties
 from soft_ue_cli.uasset.reader import UAssetReader
 
-
 def _fname_ref(index: int, number: int = 0) -> int:
     return (number << 32) | index
-
 
 class _FakeNameResolver:
     def __init__(self, names: list[str]) -> None:
@@ -27,7 +25,6 @@ class _FakeNameResolver:
         if 0 <= index < len(self.names):
             return self.names[index]
         return f"<invalid_name_{value}>"
-
 
 def test_read_property_tag_uses_resolved_name_ref_for_combined_fname():
     resolver = _FakeNameResolver([
@@ -51,7 +48,6 @@ def test_read_property_tag_uses_resolved_name_ref_for_combined_fname():
     assert tag.name == "DataLayerAssets"
     assert tag.type == "ArrayProperty"
     assert tag.inner_type == "SoftObjectProperty"
-
 
 def test_read_tagged_properties_stops_on_none_with_combined_fname():
     resolver = _FakeNameResolver([

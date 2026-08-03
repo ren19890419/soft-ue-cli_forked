@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ from unittest.mock import patch
 import pytest
 
 from soft_ue_cli import __main__ as main_mod
+from soft_ue_cli.client import BridgeCallMeta
+from soft_ue_cli.errors import BridgeError, ErrorKind
 from soft_ue_cli.__main__ import (
     _SCRIPTS_DIR,
     _claude_md_section,
@@ -34,6 +37,7 @@ from soft_ue_cli.__main__ import (
     cmd_add_anim_state_machine,
     cmd_add_anim_transition,
     cmd_batch_call,
+    cmd_blueprint_component_add,
     cmd_build_and_relaunch,
     cmd_call_function,
     cmd_capture_pie_screenshot,
@@ -50,6 +54,7 @@ from soft_ue_cli.__main__ import (
     cmd_inspect_mutable_parameters,
     cmd_inspect_pawn_possession,
     cmd_list_scripts,
+    cmd_mcp_surface_status,
     cmd_pie_session,
     cmd_pie_tick,
     cmd_query_enum,
@@ -77,9 +82,7 @@ from soft_ue_cli.__main__ import (
     cmd_wire_co_slot_from_table,
 )
 
-
 # -- _parse_vector -------------------------------------------------------------
-
 
 def test_commands_json_prints_command_metadata(capsys):
     parser = build_parser()
@@ -93,7 +96,6 @@ def test_commands_json_prints_command_metadata(capsys):
     assert "umg layout" in names
     assert "compare-umg-layout" not in names
 
-
 def test_commands_include_removed_prints_migration_metadata(capsys):
     parser = build_parser()
     args = parser.parse_args(["commands", "--include-removed", "--json"])
@@ -105,7 +107,6 @@ def test_commands_include_removed_prints_migration_metadata(capsys):
     assert removed["status"] == "removed"
     assert removed["canonical_command"] == "blueprint inspect"
 
-
 def test_commands_filter_by_category_prints_human_rows(capsys):
     parser = build_parser()
     args = parser.parse_args(["commands", "--category", "compare"])
@@ -116,7 +117,6 @@ def test_commands_filter_by_category_prints_human_rows(capsys):
     assert "umg layout" in out
     assert "compare-umg-layout" not in out
     assert "removed" not in out
-
 
 def test_cmd_status_adds_diagnostics_for_stale_or_wrong_bridge_endpoint(capsys, monkeypatch):
     parser = build_parser()
@@ -137,61 +137,82 @@ def test_cmd_status_adds_diagnostics_for_stale_or_wrong_bridge_endpoint(capsys, 
     assert payload["diagnostics"]["error_code"] == "http_404_not_bridge"
     assert "SOFT_UE_BRIDGE_PORT" in payload["diagnostics"]["recovery_hint"]
 
+def test_cmd_mcp_surface_status_outputs_selector_report(capsys, monkeypatch):
+    parser = build_parser()
+    args = parser.parse_args(["mcp-surface-status"])
+
+    monkeypatch.setattr(
+        main_mod,
+        "probe_official_mcp",
+        lambda endpoint, timeout=1.0: main_mod.SurfaceProbe(
+            name="official_mcp",
+            available=True,
+            endpoint=endpoint,
+            status="available",
+            detail=None,
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "probe_soft_ue_bridge",
+        lambda timeout=1.0: main_mod.SurfaceProbe(
+            name="soft_ue_bridge",
+            available=False,
+            endpoint="http://127.0.0.1:8080",
+            status="unreachable",
+            detail="connection refused",
+        ),
+    )
+
+    cmd_mcp_surface_status(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "soft-ue.mcp-surface.v1"
+    assert payload["availability"] == "official-only"
+    assert payload["recommendation"]["primary"] == "official-mcp"
 
 def test_parse_vector_three_components():
     assert _parse_vector("1.0,2.0,3.0") == [1.0, 2.0, 3.0]
 
-
 def test_parse_vector_integers():
     assert _parse_vector("0,100,200") == [0.0, 100.0, 200.0]
 
-
 def test_parse_vector_negative():
     assert _parse_vector("-1.5,0,1.5") == [-1.5, 0.0, 1.5]
-
 
 def test_parse_vector_invalid_exits():
     with pytest.raises(SystemExit) as exc:
         _parse_vector("a,b,c")
     assert exc.value.code == 1
 
-
 def test_parse_vector_single_value():
     assert _parse_vector("42") == [42.0]
 
-
 def test_parse_int_list_valid():
     assert _parse_int_list("0,100,200") == [0, 100, 200]
-
 
 def test_parse_int_list_invalid_exits():
     with pytest.raises(SystemExit) as exc:
         _parse_int_list("a,b,c")
     assert exc.value.code == 1
 
-
 # -- _claude_md_section --------------------------------------------------------
-
 
 def test_claude_md_section_contains_cli_cmd():
     section = _claude_md_section("python -m soft_ue_cli")
     assert "python -m soft_ue_cli" in section
     assert "python -m soft_ue_cli --help" in section
 
-
 def test_claude_md_section_has_heading():
     section = _claude_md_section("soft-ue-cli")
     assert "## Unreal Engine control" in section
 
-
 # -- build_parser --------------------------------------------------------------
-
 
 def test_parser_requires_command():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args([])
-
 
 def test_parser_setup_no_args():
     parser = build_parser()
@@ -200,18 +221,175 @@ def test_parser_setup_no_args():
     assert args.project_path is None
     assert args.plugin_src is None
 
-
 def test_parser_setup_with_project_path():
     parser = build_parser()
     args = parser.parse_args(["setup", "/tmp/MyGame"])
     assert args.project_path == "/tmp/MyGame"
-
 
 def test_parser_setup_with_plugin_src():
     parser = build_parser()
     args = parser.parse_args(["setup", "--plugin-src", "/opt/plugin"])
     assert args.plugin_src == "/opt/plugin"
 
+def test_expert_context_parser_recognizes_args():
+    args = build_parser().parse_args([
+        "expert",
+        "context",
+        "--task",
+        "Build fails",
+        "--ue-version",
+        "5.8",
+        "--platform",
+        "Win64",
+        "--execution-mode",
+        "editor",
+        "--plugin",
+        "GameplayAbilities",
+        "--plugin",
+        "StateTree",
+        "--evidence-json",
+        "evidence.json",
+    ])
+
+    assert args.command == "expert"
+    assert args.expert_action == "context"
+    assert args.task == "Build fails"
+    assert args.ue_version == "5.8"
+    assert args.platform == "Win64"
+    assert args.execution_mode == "editor"
+    assert args.plugin == ["GameplayAbilities", "StateTree"]
+    assert args.evidence_json == "evidence.json"
+
+def test_expert_context_handler_builds_request_and_prints_response(monkeypatch, tmp_path):
+    evidence_file = tmp_path / "evidence.json"
+    evidence_file.write_text(
+        json.dumps([{"kind": "log", "value": "UHT failed", "source": "build-log"}]),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "expert",
+        "context",
+        "--task",
+        "Build fails",
+        "--ue-version",
+        "5.8",
+        "--platform",
+        "Win64",
+        "--execution-mode",
+        "editor",
+        "--plugin",
+        "GameplayAbilities",
+        "--evidence-json",
+        str(evidence_file),
+    ])
+    calls: dict[str, object] = {}
+
+    class FakeClient:
+        @classmethod
+        def from_environment(cls):
+            calls["from_environment"] = True
+            return cls()
+
+        def context(self, request: dict[str, object]) -> dict[str, object]:
+            calls["request"] = request
+            return {"schema": "soft-ue.expert-context.v1", "answer": "ok"}
+
+    monkeypatch.setattr("soft_ue_cli.expert_context.ExpertContextClient", FakeClient)
+
+    with patch("soft_ue_cli.__main__._print_json") as print_json:
+        args.func(args)
+
+    assert calls["from_environment"] is True
+    request = calls["request"]
+    assert request["task"] == "Build fails"
+    assert request["evidence"] == [{"kind": "log", "value": "UHT failed", "source": "build-log"}]
+    assert request["environment"] == {
+        "ue_version": "5.8",
+        "platform": "Win64",
+        "execution_mode": "editor",
+        "plugins": ["GameplayAbilities"],
+    }
+    print_json.assert_called_once_with({"schema": "soft-ue.expert-context.v1", "answer": "ok"})
+
+def test_expert_context_rejects_non_list_evidence_file(tmp_path, capsys):
+    evidence_file = tmp_path / "evidence.json"
+    evidence_file.write_text(json.dumps({"kind": "log"}), encoding="utf-8")
+    args = build_parser().parse_args([
+        "expert",
+        "context",
+        "--task",
+        "Build fails",
+        "--evidence-json",
+        str(evidence_file),
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        args.func(args)
+
+    assert exc.value.code == 1
+    assert "--evidence-json must contain a JSON list" in capsys.readouterr().err
+
+def test_expert_context_rejects_malformed_evidence_items(tmp_path, capsys):
+    evidence_file = tmp_path / "evidence.json"
+    evidence_file.write_text(json.dumps([{"kind": "log", "value": "missing source"}]), encoding="utf-8")
+    args = build_parser().parse_args([
+        "expert",
+        "context",
+        "--task",
+        "Build fails",
+        "--evidence-json",
+        str(evidence_file),
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        args.func(args)
+
+    assert exc.value.code == 1
+    assert "evidence item 0" in capsys.readouterr().err
+
+def test_expert_context_evidence_read_error_does_not_echo_absolute_path(monkeypatch, capsys):
+    private_path = r"D:\srcp\PrivateProject\evidence.json"
+    original_open = open
+
+    def raising_open(path, *args, **kwargs):
+        if path == private_path:
+            raise OSError(f"cannot read {private_path}")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", raising_open)
+    args = build_parser().parse_args([
+        "expert",
+        "context",
+        "--task",
+        "Build fails",
+        "--evidence-json",
+        private_path,
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        args.func(args)
+
+    stderr = capsys.readouterr().err
+    assert exc.value.code == 1
+    assert "failed to read --evidence-json" in stderr
+    assert private_path not in stderr
+
+def test_build_parser_and_commands_json_do_not_require_expert_env(monkeypatch, capsys):
+    monkeypatch.delenv("SOFT_UE_EXPERT_SERVER_URL", raising=False)
+
+    parser = build_parser()
+    args = parser.parse_args(["commands", "--json"])
+    cmd_commands(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "soft-ue.commands.v1"
+
+def test_query_ue_knowledge_still_parses():
+    args = build_parser().parse_args(["query-ue-knowledge", "movement mode", "--type", "skill"])
+
+    assert args.command == "query-ue-knowledge"
+    assert args.query == "movement mode"
+    assert args.type == "skill"
 
 def test_parser_spawn_actor():
     parser = build_parser()
@@ -220,12 +398,10 @@ def test_parser_spawn_actor():
     assert args.location is None
     assert args.rotation is None
 
-
 def test_parser_spawn_actor_with_location():
     parser = build_parser()
     args = parser.parse_args(["spawn-actor", "PointLight", "--location", "0,0,200"])
     assert args.location == "0,0,200"
-
 
 def test_parser_query_level_defaults():
     parser = build_parser()
@@ -234,12 +410,10 @@ def test_parser_query_level_defaults():
     assert args.components is False
     assert args.world is None
 
-
 def test_parser_query_level_world():
     parser = build_parser()
     args = parser.parse_args(["query-level", "--world", "pie"])
     assert args.world == "pie"
-
 
 def test_cmd_query_level_forwards_world():
     parser = build_parser()
@@ -248,7 +422,6 @@ def test_cmd_query_level_forwards_world():
         with patch("soft_ue_cli.__main__._print_json"):
             args.func(args)
     mock_run.assert_called_once_with("query-level", {"limit": 100, "search": "BP_Player*", "world": "pie"})
-
 
 def test_parser_get_logs_defaults():
     parser = build_parser()
@@ -259,19 +432,16 @@ def test_parser_get_logs_defaults():
     assert args.since is None
     assert args.tail_follow is False
 
-
 def test_parser_set_console_var():
     parser = build_parser()
     args = parser.parse_args(["set-console-var", "r.VSync", "0"])
     assert args.name == "r.VSync"
     assert args.value == "0"
 
-
 def test_parser_get_console_var():
     parser = build_parser()
     args = parser.parse_args(["get-console-var", "t.MaxFPS"])
     assert args.name == "t.MaxFPS"
-
 
 def test_parser_build_and_relaunch_flags():
     parser = build_parser()
@@ -290,6 +460,9 @@ def test_parser_build_and_relaunch_flags():
         "--remember-startup-recovery",
         "--startup-marker-timeout",
         "30",
+        "--no-uba",
+        "--no-xge",
+        "--no-local-build-fallback",
     ])
     assert args.config == "Debug"
     assert args.skip_relaunch is True
@@ -299,7 +472,9 @@ def test_parser_build_and_relaunch_flags():
     assert args.startup_recovery == "skip"
     assert args.remember_startup_recovery is True
     assert args.startup_marker_timeout == 30
-
+    assert args.no_uba is True
+    assert args.no_xge is True
+    assert args.local_build_fallback is False
 
 def test_cmd_build_and_relaunch_forwards_startup_marker_timeout():
     parser = build_parser()
@@ -311,6 +486,34 @@ def test_cmd_build_and_relaunch_forwards_startup_marker_timeout():
             args.func(args)
     mock_run.assert_called_once_with("build-and-relaunch", {"startup_marker_timeout": 45})
 
+def test_cmd_build_and_relaunch_forwards_local_build_flags():
+    parser = build_parser()
+    args = parser.parse_args(["build-and-relaunch", "--no-uba", "--no-xge", "--no-local-build-fallback"])
+    with patch("soft_ue_cli.__main__.health_check", return_value={"running": True}), patch(
+        "soft_ue_cli.__main__._run_tool", return_value={"success": True}
+    ) as mock_run:
+        with patch("soft_ue_cli.__main__._print_json"):
+            args.func(args)
+
+    mock_run.assert_called_once_with(
+        "build-and-relaunch",
+        {
+            "no_uba": True,
+            "no_xge": True,
+            "local_build_fallback": False,
+        },
+    )
+
+def test_cmd_build_and_relaunch_forwards_keep_package_restore():
+    parser = build_parser()
+    args = parser.parse_args(["build-and-relaunch", "--keep-package-restore"])
+    with patch("soft_ue_cli.__main__.health_check", return_value={"running": True}), patch(
+        "soft_ue_cli.__main__._run_tool", return_value={"success": True}
+    ) as mock_run:
+        with patch("soft_ue_cli.__main__._print_json"):
+            args.func(args)
+
+    mock_run.assert_called_once_with("build-and-relaunch", {"skip_package_restore": False})
 
 def test_parser_wait_for_ready_alias_and_timeout():
     parser = build_parser()
@@ -318,7 +521,6 @@ def test_parser_wait_for_ready_alias_and_timeout():
     assert args.func == cmd_wait_for_ready
     assert args.timeout == 5.0
     assert args.poll_interval == 0.25
-
 
 def test_parser_trigger_live_coding_scope_flags():
     parser = build_parser()
@@ -334,12 +536,10 @@ def test_parser_trigger_live_coding_scope_flags():
     assert args.plugin == "SoftUEBridge"
     assert args.no_wait is True
 
-
 def test_parser_reload_bridge_module_defaults():
     parser = build_parser()
     args = parser.parse_args(["reload-bridge-module"])
     assert args.module == "SoftUEBridgeEditor"
-
 
 def test_parser_get_logs_follow_args():
     parser = build_parser()
@@ -348,14 +548,12 @@ def test_parser_get_logs_follow_args():
     assert args.since == "42"
     assert args.tail_follow is True
 
-
 def test_parser_inspect_uasset():
     parser = build_parser()
     args = parser.parse_args(["asset", "inspect-file", "BP_Player.uasset", "--sections", "summary,properties", "--format", "json"])
     assert args.file_path == "BP_Player.uasset"
     assert args.sections == "summary,properties"
     assert args.format == "json"
-
 
 def test_parser_diff_uasset():
     parser = build_parser()
@@ -364,12 +562,10 @@ def test_parser_diff_uasset():
     assert args.right_file == "BP_New.uasset"
     assert args.sections == "properties"
 
-
 def test_parser_get_property_world():
     parser = build_parser()
     args = parser.parse_args(["get-property", "BP_Player_C_0", "Health", "--world", "pie"])
     assert args.world == "pie"
-
 
 def test_cmd_get_property_forwards_world():
     parser = build_parser()
@@ -382,12 +578,10 @@ def test_cmd_get_property_forwards_world():
         {"actor_name": "BP_Player_C_0", "property_name": "Health", "world": "pie"},
     )
 
-
 def test_parser_metasound_inspect():
     parser = build_parser()
     args = parser.parse_args(["metasound", "inspect", "/Game/Audio/MS_Foo"])
     assert args.asset_path == "/Game/Audio/MS_Foo"
-
 
 def test_cmd_metasound_inspect_forwards_asset_path():
     parser = build_parser()
@@ -397,7 +591,6 @@ def test_cmd_metasound_inspect_forwards_asset_path():
             args.func(args)
     mock_run.assert_called_once_with("metasound-inspect", {"asset_path": "/Game/Audio/MS_Foo"})
 
-
 def test_parser_call_function_no_args():
     parser = build_parser()
     args = parser.parse_args(["call-function", "BP_Hero", "Jump"])
@@ -405,15 +598,12 @@ def test_parser_call_function_no_args():
     assert args.legacy_function_name == "Jump"
     assert args.args is None
 
-
 def test_parser_server_override():
     parser = build_parser()
     args = parser.parse_args(["--server", "http://remote:9000", "status"])
     assert args.server == "http://remote:9000"
 
-
 # -- cmd_setup output ----------------------------------------------------------
-
 
 def test_cmd_setup_uses_cwd_by_default(tmp_path, capsys, monkeypatch):
     (tmp_path / "MyGame.uproject").write_text("{}")
@@ -426,7 +616,6 @@ def test_cmd_setup_uses_cwd_by_default(tmp_path, capsys, monkeypatch):
     assert "SoftUEBridge" in out
     assert "CLAUDE.md" in out
 
-
 def test_cmd_setup_uses_given_path(tmp_path, capsys):
     (tmp_path / "TestGame.uproject").write_text("{}")
     parser = build_parser()
@@ -435,7 +624,6 @@ def test_cmd_setup_uses_given_path(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "TestGame.uproject" in out
 
-
 def test_cmd_setup_no_uproject_shows_placeholder(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     parser = build_parser()
@@ -443,7 +631,6 @@ def test_cmd_setup_no_uproject_shows_placeholder(tmp_path, capsys, monkeypatch):
     cmd_setup(args)
     out = capsys.readouterr().out
     assert "<YourGame>.uproject" in out
-
 
 def test_cmd_setup_contains_check_setup_command(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -454,7 +641,6 @@ def test_cmd_setup_contains_check_setup_command(tmp_path, capsys, monkeypatch):
     assert "check-setup" in out
     assert sys.executable in out
 
-
 def test_cmd_setup_contains_plugin_src(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     parser = build_parser()
@@ -462,7 +648,6 @@ def test_cmd_setup_contains_plugin_src(tmp_path, capsys, monkeypatch):
     cmd_setup(args)
     out = capsys.readouterr().out
     assert "/custom/plugin" in out or "custom" in out
-
 
 def test_cmd_setup_warns_to_refresh_source_timestamps(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -473,11 +658,9 @@ def test_cmd_setup_warns_to_refresh_source_timestamps(tmp_path, capsys, monkeypa
     assert "Refresh the copied plugin Source timestamps" in out
     assert "UnrealHeaderTool" in out
 
-
 # -- script management (save / list / delete / run --name) ---------------------
 
 import soft_ue_cli.__main__ as _main_mod
-
 
 @pytest.fixture()
 def scripts_home(tmp_path, monkeypatch):
@@ -485,7 +668,6 @@ def scripts_home(tmp_path, monkeypatch):
     fake_dir = tmp_path / ".soft-ue-bridge" / "scripts"
     monkeypatch.setattr(_main_mod, "_SCRIPTS_DIR", fake_dir)
     return fake_dir
-
 
 def test_save_script_inline(scripts_home, capsys):
     parser = build_parser()
@@ -498,7 +680,6 @@ def test_save_script_inline(scripts_home, capsys):
     assert out["status"] == "ok"
     assert out["name"] == "hello"
 
-
 def test_save_script_from_file(tmp_path, scripts_home, capsys):
     src = tmp_path / "my_script.py"
     src.write_text("import unreal", encoding="utf-8")
@@ -509,14 +690,12 @@ def test_save_script_from_file(tmp_path, scripts_home, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "ok"
 
-
 def test_save_script_no_source_exits(scripts_home):
     parser = build_parser()
     args = parser.parse_args(["save-script", "empty"])
     with pytest.raises(SystemExit) as exc:
         cmd_save_script(args)
     assert exc.value.code == 1
-
 
 def test_save_script_both_sources_exits(scripts_home):
     parser = build_parser()
@@ -525,7 +704,6 @@ def test_save_script_both_sources_exits(scripts_home):
         cmd_save_script(args)
     assert exc.value.code == 1
 
-
 def test_save_script_missing_file_exits(scripts_home):
     parser = build_parser()
     args = parser.parse_args(["save-script", "x", "--script-path", "/nonexistent/file.py"])
@@ -533,14 +711,12 @@ def test_save_script_missing_file_exits(scripts_home):
         cmd_save_script(args)
     assert exc.value.code == 1
 
-
 def test_save_script_invalid_name_exits(scripts_home):
     parser = build_parser()
     args = parser.parse_args(["save-script", "../evil", "--script", "pass"])
     with pytest.raises(SystemExit) as exc:
         cmd_save_script(args)
     assert exc.value.code == 1
-
 
 def test_list_scripts_empty(scripts_home, capsys):
     parser = build_parser()
@@ -550,7 +726,6 @@ def test_list_scripts_empty(scripts_home, capsys):
     assert out["scripts"] == []
     assert out["count"] == 0
 
-
 def test_list_scripts_no_dir_created(tmp_path, monkeypatch, capsys):
     """list-scripts must not create the scripts directory if it doesn't exist."""
     fake_dir = tmp_path / "no-scripts-here"
@@ -559,7 +734,6 @@ def test_list_scripts_no_dir_created(tmp_path, monkeypatch, capsys):
     args = parser.parse_args(["list-scripts"])
     cmd_list_scripts(args)
     assert not fake_dir.exists()
-
 
 def test_list_scripts_shows_saved(scripts_home, capsys):
     scripts_home.mkdir(parents=True, exist_ok=True)
@@ -574,7 +748,6 @@ def test_list_scripts_shows_saved(scripts_home, capsys):
     assert "beta" in names
     assert out["count"] == 2
 
-
 def test_delete_script(scripts_home, capsys):
     scripts_home.mkdir(parents=True, exist_ok=True)
     (scripts_home / "todelete.py").write_text("pass", encoding="utf-8")
@@ -586,14 +759,12 @@ def test_delete_script(scripts_home, capsys):
     assert out["status"] == "ok"
     assert out["name"] == "todelete"
 
-
 def test_delete_script_not_found_exits(scripts_home):
     parser = build_parser()
     args = parser.parse_args(["delete-script", "ghost"])
     with pytest.raises(SystemExit) as exc:
         cmd_delete_script(args)
     assert exc.value.code == 1
-
 
 def test_delete_script_invalid_name_exits(scripts_home):
     parser = build_parser()
@@ -602,16 +773,16 @@ def test_delete_script_invalid_name_exits(scripts_home):
         cmd_delete_script(args)
     assert exc.value.code == 1
 
-
 def test_run_python_script_by_name(scripts_home, capsys):
     scripts_home.mkdir(parents=True, exist_ok=True)
     (scripts_home / "runner.py").write_text("print('run')", encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(["run-python-script", "--name", "runner"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"output": "run"}) as mock_call:
+    with patch(
+        "soft_ue_cli.__main__.call_tool_ex", return_value=({"output": "run"}, BridgeCallMeta())
+    ) as mock_call:
         cmd_run_python_script(args)
     mock_call.assert_called_once_with("run-python-script", {"script_path": str((scripts_home / "runner.py").resolve())})
-
 
 def test_run_python_script_by_name_not_found_exits(scripts_home):
     parser = build_parser()
@@ -620,14 +791,12 @@ def test_run_python_script_by_name_not_found_exits(scripts_home):
         cmd_run_python_script(args)
     assert exc.value.code == 1
 
-
 def test_run_python_script_no_args_exits(scripts_home):
     parser = build_parser()
     args = parser.parse_args(["run-python-script"])
     with pytest.raises(SystemExit) as exc:
         cmd_run_python_script(args)
     assert exc.value.code == 1
-
 
 def test_run_python_script_path_reads_file(tmp_path):
     script_path = tmp_path / "runtime_check.py"
@@ -637,7 +806,7 @@ def test_run_python_script_path_reads_file(tmp_path):
     args = parser.parse_args(["run-python-script", "--script-path", str(script_path), "--world", "pie"])
 
     with patch("soft_ue_cli.__main__._ensure_pie_running") as mock_ensure, patch(
-        "soft_ue_cli.__main__.call_tool", return_value={"output": "ok"}
+        "soft_ue_cli.__main__.call_tool_ex", return_value=({"output": "ok"}, BridgeCallMeta())
     ) as mock_call:
         cmd_run_python_script(args)
 
@@ -650,7 +819,6 @@ def test_run_python_script_path_reads_file(tmp_path):
         },
     )
 
-
 def test_run_python_script_allow_unsafe_python_calls_routes_to_bridge_tool():
     parser = build_parser()
     script = "import unreal; unreal.IKRetargetBatchOperation.duplicate_and_retarget([])"
@@ -661,7 +829,9 @@ def test_run_python_script_allow_unsafe_python_calls_routes_to_bridge_tool():
         "--allow-unsafe-python-calls",
     ])
 
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"output": "ok"}) as mock_call:
+    with patch(
+        "soft_ue_cli.__main__.call_tool_ex", return_value=({"output": "ok"}, BridgeCallMeta())
+    ) as mock_call:
         cmd_run_python_script(args)
 
     mock_call.assert_called_once_with(
@@ -671,7 +841,6 @@ def test_run_python_script_allow_unsafe_python_calls_routes_to_bridge_tool():
             "allow_unsafe_python_calls": True,
         },
     )
-
 
 def test_run_python_script_args_route_to_bridge_tool_sys_argv(tmp_path):
     script_path = tmp_path / "argv_check.py"
@@ -687,7 +856,9 @@ def test_run_python_script_args_route_to_bridge_tool_sys_argv(tmp_path):
         "--flag=value",
     ])
 
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"output": "ok"}) as mock_call:
+    with patch(
+        "soft_ue_cli.__main__.call_tool_ex", return_value=({"output": "ok"}, BridgeCallMeta())
+    ) as mock_call:
         cmd_run_python_script(args)
 
     mock_call.assert_called_once_with(
@@ -698,18 +869,123 @@ def test_run_python_script_args_route_to_bridge_tool_sys_argv(tmp_path):
         },
     )
 
+def test_run_python_script_empty_result_with_dead_bridge_reports_editor_terminated(capsys):
+    parser = build_parser()
+    args = parser.parse_args(["run-python-script", "--script", "print('maybe')"])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={}), patch(
+        "soft_ue_cli.__main__.health_check", return_value={"error": "connection refused"}
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd_run_python_script(args)
+
+    assert exc.value.code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["success"] is False
+    assert result["error_code"] == "EDITOR_TERMINATED_DURING_EXECUTION"
+    assert "terminated during execution" in result["error"]
+
+def test_run_python_script_relaunch_on_crash_retries_once(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    editor_exe.write_text("", encoding="utf-8")
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script",
+        "print('retry')",
+        "--relaunch-on-crash",
+        "--project",
+        str(project),
+        "--editor-exe",
+        str(editor_exe),
+        "--relaunch-timeout",
+        "5",
+    ])
+
+    health_results = iter([
+        {"error": "connection refused"},
+        {"error": "not ready"},
+        {"running": True},
+    ])
+    popen_calls = []
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda command, **kwargs: popen_calls.append((command, kwargs)))
+    monkeypatch.setattr(main_mod.time, "sleep", lambda _seconds: None)
+
+    with patch("soft_ue_cli.__main__.call_tool", return_value={}) as mock_call, patch(
+        "soft_ue_cli.__main__.call_tool_ex",
+        return_value=({"success": True, "output": "retry"}, BridgeCallMeta()),
+    ) as mock_call_ex, patch(
+        "soft_ue_cli.__main__.health_check", side_effect=lambda **_kwargs: next(health_results)
+    ):
+        cmd_run_python_script(args)
+
+    assert mock_call.call_count == 1
+    assert mock_call_ex.call_count == 1
+    assert popen_calls[0][0] == [str(editor_exe.resolve()), str(project.resolve())]
+    result = json.loads(capsys.readouterr().out)
+    assert result["success"] is True
+    assert result["retried_after_editor_relaunch"] is True
+
+def test_run_python_script_relaunch_on_bridge_error_retries_once(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    editor_exe.write_text("", encoding="utf-8")
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-python-script",
+        "--script",
+        "print('retry')",
+        "--relaunch-on-crash",
+        "--project",
+        str(project),
+        "--editor-exe",
+        str(editor_exe),
+        "--relaunch-timeout",
+        "5",
+    ])
+
+    bridge_error = BridgeError(
+        ErrorKind.EXPECTED, "cannot connect to SoftUEBridge", "run-python-script", {"script": "print('retry')"}
+    )
+    health_results = iter([
+        {"error": "connection refused"},
+        {"error": "not ready"},
+        {"running": True},
+    ])
+    popen_calls = []
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda command, **kwargs: popen_calls.append((command, kwargs)))
+    monkeypatch.setattr(main_mod.time, "sleep", lambda _seconds: None)
+
+    with patch("soft_ue_cli.__main__.call_tool", side_effect=bridge_error) as mock_call, patch(
+        "soft_ue_cli.__main__.call_tool_ex",
+        return_value=({"success": True, "output": "retry"}, BridgeCallMeta()),
+    ) as mock_call_ex, patch(
+        "soft_ue_cli.__main__.health_check", side_effect=lambda **_kwargs: next(health_results)
+    ):
+        cmd_run_python_script(args)
+
+    assert mock_call.call_count == 1
+    assert mock_call_ex.call_count == 1
+    assert popen_calls[0][0] == [str(editor_exe.resolve()), str(project.resolve())]
+    result = json.loads(capsys.readouterr().out)
+    assert result["success"] is True
+    assert result["retried_after_editor_relaunch"] is True
 
 def test_run_python_script_world_pie_auto_start():
     parser = build_parser()
     args = parser.parse_args(["run-python-script", "--script", "print('ok')", "--world", "pie", "--auto-start-pie"])
 
     with patch("soft_ue_cli.__main__._ensure_pie_running") as mock_ensure, patch(
-        "soft_ue_cli.__main__.call_tool", return_value={"output": "ok"}
+        "soft_ue_cli.__main__.call_tool_ex", return_value=({"output": "ok"}, BridgeCallMeta())
     ):
         cmd_run_python_script(args)
 
     mock_ensure.assert_called_once()
-
 
 def test_run_python_script_path_missing_exits(tmp_path):
     parser = build_parser()
@@ -720,34 +996,27 @@ def test_run_python_script_path_missing_exits(tmp_path):
 
     assert exc.value.code == 1
 
-
 # -- _validate_script_name -----------------------------------------------------
-
 
 def test_validate_script_name_valid():
     _validate_script_name("my-script_01")  # should not raise
-
 
 def test_validate_script_name_path_traversal_exits():
     with pytest.raises(SystemExit) as exc:
         _validate_script_name("../evil")
     assert exc.value.code == 1
 
-
 def test_validate_script_name_empty_exits():
     with pytest.raises(SystemExit) as exc:
         _validate_script_name("")
     assert exc.value.code == 1
-
 
 def test_validate_script_name_slash_exits():
     with pytest.raises(SystemExit) as exc:
         _validate_script_name("foo/bar")
     assert exc.value.code == 1
 
-
 # -- parser tests for new subcommands ------------------------------------------
-
 
 def test_query_blueprint_graph_parses_recursive_and_node_class_filters():
     args = build_parser().parse_args([
@@ -763,7 +1032,6 @@ def test_query_blueprint_graph_parses_recursive_and_node_class_filters():
 
     assert args.recursive is True
     assert args.node_class == "AnimGraphNode_StateMachine,AnimGraphNode_BlendStack"
-
 
 def test_query_blueprint_graph_forwards_recursive_and_node_class_filters():
     ns = argparse.Namespace(
@@ -795,7 +1063,6 @@ def test_query_blueprint_graph_forwards_recursive_and_node_class_filters():
         },
     )
 
-
 def test_parser_save_script():
     parser = build_parser()
     args = parser.parse_args(["save-script", "myscript", "--script", "pass"])
@@ -803,36 +1070,30 @@ def test_parser_save_script():
     assert args.script == "pass"
     assert args.script_path is None
 
-
 def test_parser_save_script_path():
     parser = build_parser()
     args = parser.parse_args(["save-script", "myscript", "--script-path", "/tmp/s.py"])
     assert args.script_path == "/tmp/s.py"
-
 
 def test_parser_list_scripts():
     parser = build_parser()
     args = parser.parse_args(["list-scripts"])
     assert args.func == cmd_list_scripts
 
-
 def test_parser_delete_script():
     parser = build_parser()
     args = parser.parse_args(["delete-script", "foo"])
     assert args.name == "foo"
-
 
 def test_parser_run_python_script_name():
     parser = build_parser()
     args = parser.parse_args(["run-python-script", "--name", "myscript"])
     assert args.name == "myscript"
 
-
 def test_parser_run_python_script_world():
     parser = build_parser()
     args = parser.parse_args(["run-python-script", "--script", "print('x')", "--world", "pie"])
     assert args.world == "pie"
-
 
 def test_cmd_build_and_relaunch_forwards_args(capsys):
     parser = build_parser()
@@ -847,7 +1108,6 @@ def test_cmd_build_and_relaunch_forwards_args(capsys):
         "build-and-relaunch",
         {"build_config": "Debug", "skip_relaunch": True},
     )
-
 
 def test_cmd_build_and_relaunch_forwards_toolchain_overrides(capsys):
     parser = build_parser()
@@ -878,7 +1138,6 @@ def test_cmd_build_and_relaunch_forwards_toolchain_overrides(capsys):
         },
     )
 
-
 def test_wait_for_build_and_relaunch_reads_utf8_bom_status_file(tmp_path, monkeypatch, capsys):
     status_path = tmp_path / "build_status.json"
     status_path.write_text('{"success": true}', encoding="utf-8-sig")
@@ -906,12 +1165,10 @@ def test_wait_for_build_and_relaunch_reads_utf8_bom_status_file(tmp_path, monkey
     assert result["success"] is True
     assert result["status"] == "build_succeeded"
 
-
 def test_build_and_relaunch_default_build_timeout_uses_bridge_timeout(monkeypatch):
     monkeypatch.setenv("SOFT_UE_BRIDGE_TIMEOUT", "1200")
 
     assert _default_build_and_relaunch_build_timeout() == 1200.0
-
 
 def test_cmd_build_and_relaunch_wait_forwards_timeout_overrides():
     parser = build_parser()
@@ -945,7 +1202,6 @@ def test_cmd_build_and_relaunch_wait_forwards_timeout_overrides():
         relaunch_timeout=3,
     )
 
-
 def test_parser_build_and_relaunch_offline_fallback_flags():
     parser = build_parser()
     args = parser.parse_args([
@@ -958,13 +1214,28 @@ def test_parser_build_and_relaunch_offline_fallback_flags():
         "--build-bat",
         "D:/UE/Engine/Build/BatchFiles/Build.bat",
         "--no-offline-fallback",
+        "--no-uba",
+        "--no-xge",
     ])
 
     assert args.project == "D:/Project/Game.uproject"
     assert args.editor_exe == "D:/UE/Engine/Binaries/Win64/UnrealEditor.exe"
     assert args.build_bat == "D:/UE/Engine/Build/BatchFiles/Build.bat"
     assert args.offline_fallback is False
+    assert args.no_uba is True
+    assert args.no_xge is True
 
+def test_parser_build_and_relaunch_skips_package_restore_by_default():
+    parser = build_parser()
+    args = parser.parse_args(["build-and-relaunch"])
+
+    assert args.skip_package_restore is True
+
+def test_parser_build_and_relaunch_can_keep_package_restore_prompt():
+    parser = build_parser()
+    args = parser.parse_args(["build-and-relaunch", "--keep-package-restore"])
+
+    assert args.skip_package_restore is False
 
 def test_cmd_build_and_relaunch_uses_offline_fallback_when_bridge_unavailable(capsys):
     parser = build_parser()
@@ -979,7 +1250,6 @@ def test_cmd_build_and_relaunch_uses_offline_fallback_when_bridge_unavailable(ca
     mock_offline.assert_called_once_with(args)
     mock_run.assert_not_called()
     assert json.loads(capsys.readouterr().out)["status"] == "ready"
-
 
 def test_offline_build_and_relaunch_builds_launches_and_waits(tmp_path, monkeypatch):
     project = tmp_path / "MyGame.uproject"
@@ -1030,6 +1300,161 @@ def test_offline_build_and_relaunch_builds_launches_and_waits(tmp_path, monkeypa
     assert f"-Project={project}" in run_calls[0][0]
     assert popen_calls[0][0] == [str(editor_exe), str(project)]
 
+def test_offline_build_and_relaunch_moves_package_restore_marker_before_launch(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    marker = tmp_path / "Saved" / "PackageRestoreData.json"
+    marker.parent.mkdir()
+    marker.write_text('{"Packages":["/Game/DirtyAsset"]}', encoding="utf-8")
+    build_bat = tmp_path / "Build.bat"
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+    launch_observations = []
+
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+
+    def fake_popen(command, **kwargs):
+        launch_observations.append({
+            "command": command,
+            "marker_exists": marker.exists(),
+            "backup_files": [str(path) for path in marker.parent.glob("PackageRestoreData.json.soft-ue-skipped-*")],
+        })
+        return object()
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", fake_popen)
+
+    args = argparse.Namespace(
+        project=str(project),
+        editor_exe=str(editor_exe),
+        build_bat=str(build_bat),
+        config="Development",
+        wait=False,
+        skip_relaunch=False,
+        build_timeout=30,
+        relaunch_timeout=5,
+        compiler=None,
+        compiler_version=None,
+        toolchain=None,
+        no_uba=False,
+        no_xge=False,
+        local_build_fallback=True,
+        skip_package_restore=True,
+    )
+
+    result = main_mod._run_offline_build_and_relaunch(args)
+
+    assert result["success"] is True
+    assert result["package_restore_skipped"] is True
+    assert launch_observations == [
+        {
+            "command": [str(editor_exe), str(project)],
+            "marker_exists": False,
+            "backup_files": [result["package_restore_marker_backup"]],
+        }
+    ]
+    assert Path(result["package_restore_marker_backup"]).read_text(encoding="utf-8") == '{"Packages":["/Game/DirtyAsset"]}'
+
+def test_offline_build_and_relaunch_can_keep_package_restore_marker(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    marker = tmp_path / "Saved" / "PackageRestoreData.json"
+    marker.parent.mkdir()
+    marker.write_text("{}", encoding="utf-8")
+    build_bat = tmp_path / "Build.bat"
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *_args, **_kwargs: object())
+
+    args = argparse.Namespace(
+        project=str(project),
+        editor_exe=str(editor_exe),
+        build_bat=str(build_bat),
+        config="Development",
+        wait=False,
+        skip_relaunch=False,
+        build_timeout=30,
+        relaunch_timeout=5,
+        compiler=None,
+        compiler_version=None,
+        toolchain=None,
+        no_uba=False,
+        no_xge=False,
+        local_build_fallback=True,
+        skip_package_restore=False,
+    )
+
+    result = main_mod._run_offline_build_and_relaunch(args)
+
+    assert result["success"] is True
+    assert result["package_restore_skipped"] is False
+    assert marker.exists()
+
+def test_offline_build_and_relaunch_still_launches_when_package_restore_marker_move_fails(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    marker = tmp_path / "Saved" / "PackageRestoreData.json"
+    marker.parent.mkdir()
+    marker.write_text("{}", encoding="utf-8")
+    build_bat = tmp_path / "Build.bat"
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+    popen_calls = []
+
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda command, **kwargs: popen_calls.append(command) or object())
+
+    original_replace = Path.replace
+
+    def fail_marker_replace(self, target):
+        if self == marker:
+            raise PermissionError("marker is locked")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_marker_replace)
+
+    args = argparse.Namespace(
+        project=str(project),
+        editor_exe=str(editor_exe),
+        build_bat=str(build_bat),
+        config="Development",
+        wait=False,
+        skip_relaunch=False,
+        build_timeout=30,
+        relaunch_timeout=5,
+        compiler=None,
+        compiler_version=None,
+        toolchain=None,
+        no_uba=False,
+        no_xge=False,
+        local_build_fallback=True,
+        skip_package_restore=True,
+    )
+
+    result = main_mod._run_offline_build_and_relaunch(args)
+
+    assert result["success"] is True
+    assert result["status"] == "launched"
+    assert result["package_restore_skipped"] is False
+    assert "marker is locked" in result["package_restore_skip_error"]
+    assert popen_calls == [[str(editor_exe), str(project)]]
+    assert marker.exists()
 
 def test_offline_build_and_relaunch_passes_toolchain_overrides(tmp_path, monkeypatch):
     project = tmp_path / "MyGame.uproject"
@@ -1069,6 +1494,91 @@ def test_offline_build_and_relaunch_passes_toolchain_overrides(tmp_path, monkeyp
     assert result["compiler"] == "VisualStudio2022"
     assert result["compiler_version"] == "14.38.33130"
 
+def test_offline_build_and_relaunch_passes_no_uba_no_xge(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    build_bat = tmp_path / "Build.bat"
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+    run_calls = []
+
+    def fake_run(command, **kwargs):
+        run_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    args = argparse.Namespace(
+        project=str(project),
+        editor_exe=str(editor_exe),
+        build_bat=str(build_bat),
+        config="Development",
+        wait=True,
+        skip_relaunch=True,
+        build_timeout=30,
+        relaunch_timeout=5,
+        compiler=None,
+        compiler_version=None,
+        toolchain=None,
+        no_uba=True,
+        no_xge=True,
+        local_build_fallback=True,
+    )
+
+    result = main_mod._run_offline_build_and_relaunch(args)
+
+    assert result["success"] is True
+    assert "-NoUBA" in run_calls[0]
+    assert "-NoXGE" in run_calls[0]
+    assert result["no_uba"] is True
+    assert result["no_xge"] is True
+
+def test_offline_build_and_relaunch_retries_failed_distributed_build_locally(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    build_bat = tmp_path / "Build.bat"
+    editor_exe = tmp_path / "UnrealEditor.exe"
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+    run_calls = []
+
+    def fake_run(command, **kwargs):
+        run_calls.append(command)
+        if len(run_calls) == 1:
+            return subprocess.CompletedProcess(command, 6, stdout="", stderr="mspdbcore.dll not found")
+        return subprocess.CompletedProcess(command, 0, stdout="local ok", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    args = argparse.Namespace(
+        project=str(project),
+        editor_exe=str(editor_exe),
+        build_bat=str(build_bat),
+        config="Development",
+        wait=True,
+        skip_relaunch=True,
+        build_timeout=30,
+        relaunch_timeout=5,
+        compiler=None,
+        compiler_version=None,
+        toolchain=None,
+        no_uba=False,
+        no_xge=False,
+        local_build_fallback=True,
+    )
+
+    result = main_mod._run_offline_build_and_relaunch(args)
+
+    assert result["success"] is True
+    assert len(run_calls) == 2
+    assert "-NoUBA" not in run_calls[0]
+    assert "-NoXGE" not in run_calls[0]
+    assert "-NoUBA" in run_calls[1]
+    assert "-NoXGE" in run_calls[1]
+    assert result["local_build_fallback_used"] is True
 
 def test_offline_build_discovers_engine_from_uproject_engine_association(tmp_path, monkeypatch):
     project = tmp_path / "MyGame.uproject"
@@ -1084,11 +1594,70 @@ def test_offline_build_discovers_engine_from_uproject_engine_association(tmp_pat
     monkeypatch.setenv("ProgramFiles", str(program_files))
     monkeypatch.delenv("UNREAL_ENGINE_DIR", raising=False)
     monkeypatch.delenv("UE_ENGINE_DIR", raising=False)
+    monkeypatch.delenv("UNREAL_EDITOR_EXE", raising=False)
+    monkeypatch.delenv("UE_EDITOR_EXE", raising=False)
+    monkeypatch.delenv("UNREAL_BUILD_BAT", raising=False)
+    monkeypatch.delenv("UE_BUILD_BAT", raising=False)
+    monkeypatch.setattr(main_mod, "_candidate_engine_dirs_from_registry", lambda _association: [])
 
     args = argparse.Namespace(editor_exe=None, build_bat=None)
 
     assert main_mod._discover_unreal_build_tools(args, project) == (editor_exe.resolve(), build_bat.resolve())
 
+def test_offline_build_discovers_custom_registry_engine_association(tmp_path, monkeypatch):
+    project = tmp_path / "MyGame.uproject"
+    project.write_text('{"EngineAssociation": "{CUSTOM-ENGINE}"}', encoding="utf-8")
+    engine_dir = tmp_path / "CustomUE" / "Engine"
+    build_bat = engine_dir / "Build" / "BatchFiles" / "Build.bat"
+    editor_exe = engine_dir / "Binaries" / "Win64" / "UnrealEditor.exe"
+    build_bat.parent.mkdir(parents=True)
+    editor_exe.parent.mkdir(parents=True)
+    build_bat.write_text("@echo off", encoding="utf-8")
+    editor_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        main_mod,
+        "_candidate_engine_dirs_from_registry",
+        lambda association: [engine_dir] if association == "{CUSTOM-ENGINE}" else [],
+    )
+    monkeypatch.delenv("UNREAL_ENGINE_DIR", raising=False)
+    monkeypatch.delenv("UE_ENGINE_DIR", raising=False)
+    monkeypatch.delenv("UNREAL_EDITOR_EXE", raising=False)
+    monkeypatch.delenv("UE_EDITOR_EXE", raising=False)
+    monkeypatch.delenv("UNREAL_BUILD_BAT", raising=False)
+    monkeypatch.delenv("UE_BUILD_BAT", raising=False)
+
+    args = argparse.Namespace(editor_exe=None, build_bat=None)
+
+    assert main_mod._discover_unreal_build_tools(args, project) == (editor_exe.resolve(), build_bat.resolve())
+
+def test_blueprint_component_add_forwards_attach_socket():
+    parser = build_parser()
+    args = parser.parse_args([
+        "blueprint-component-add",
+        "/Game/BP_Player",
+        "SkeletalMeshComponent",
+        "--component-name",
+        "Charm",
+        "--attach-to",
+        "Mesh",
+        "--attach-socket",
+        "hand_r_socket",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        with patch("soft_ue_cli.__main__._print_json"):
+            cmd_blueprint_component_add(args)
+
+    mock_run.assert_called_once_with(
+        "blueprint-component-add",
+        {
+            "asset_path": "/Game/BP_Player",
+            "component_class": "SkeletalMeshComponent",
+            "component_name": "Charm",
+            "attach_to": "Mesh",
+            "attach_socket": "hand_r_socket",
+        },
+    )
 
 def test_offline_build_and_relaunch_reports_build_failure(tmp_path, monkeypatch):
     project = tmp_path / "MyGame.uproject"
@@ -1122,7 +1691,6 @@ def test_offline_build_and_relaunch_reports_build_failure(tmp_path, monkeypatch)
     assert result["exit_code"] == 2
     assert "compiler error" in result["build_output"]
 
-
 def test_cmd_wait_for_ready_returns_when_bridge_health_succeeds(capsys, monkeypatch):
     parser = build_parser()
     args = parser.parse_args(["wait-for-ready", "--timeout", "5"])
@@ -1140,7 +1708,6 @@ def test_cmd_wait_for_ready_returns_when_bridge_health_succeeds(capsys, monkeypa
     assert result["status"] == "ready"
     assert result["server_url"] == "http://127.0.0.1:8080"
     assert result["health"]["running"] is True
-
 
 def test_cmd_wait_for_ready_timeout_reports_last_error(capsys, monkeypatch):
     parser = build_parser()
@@ -1166,7 +1733,6 @@ def test_cmd_wait_for_ready_timeout_reports_last_error(capsys, monkeypatch):
     assert result["status"] == "timeout"
     assert result["last_error"] == "connection refused"
     assert "bridge did not become ready within 2s" in captured.err
-
 
 def test_cmd_wait_for_ready_timeout_reports_restore_packages_modal(capsys, monkeypatch):
     parser = build_parser()
@@ -1201,7 +1767,6 @@ def test_cmd_wait_for_ready_timeout_reports_restore_packages_modal(capsys, monke
     assert result["diagnostics"]["lifecycle_state"] == "editor_blocked_by_modal"
     assert "Restore Packages" in captured.err
 
-
 def test_cmd_wait_for_ready_launches_editor_before_polling(capsys, monkeypatch, tmp_path):
     uproject_path = tmp_path / "MyGame.uproject"
     uproject_path.write_text("{}", encoding="utf-8")
@@ -1221,7 +1786,6 @@ def test_cmd_wait_for_ready_launches_editor_before_polling(capsys, monkeypatch, 
 
     assert launched == [str(uproject_path)]
     assert json.loads(capsys.readouterr().out)["status"] == "ready"
-
 
 def test_wait_for_build_and_relaunch_reports_intermediate_status(tmp_path, capsys, monkeypatch):
     status_path = tmp_path / "BuildAndRelaunch.status.json"
@@ -1274,7 +1838,6 @@ def test_wait_for_build_and_relaunch_reports_intermediate_status(tmp_path, capsy
     assert "building" in captured.err
     assert json.loads(captured.out)["status"] == "build_succeeded"
 
-
 def test_wait_for_build_and_relaunch_timeout_reports_last_stage(tmp_path, capsys, monkeypatch):
     status_path = tmp_path / "BuildAndRelaunch.status.json"
     log_path = tmp_path / "BuildAndRelaunch.log"
@@ -1320,7 +1883,6 @@ def test_wait_for_build_and_relaunch_timeout_reports_last_stage(tmp_path, capsys
     assert str(status_path) in captured.err
     assert str(log_path) in captured.err
 
-
 def test_wait_for_build_and_relaunch_reads_success_status_before_timeout(tmp_path, capsys, monkeypatch):
     status_path = tmp_path / "BuildAndRelaunch.status.json"
     log_path = tmp_path / "BuildAndRelaunch.log"
@@ -1359,7 +1921,6 @@ def test_wait_for_build_and_relaunch_reads_success_status_before_timeout(tmp_pat
     result = json.loads(capsys.readouterr().out)
     assert result["success"] is True
     assert result["status"] == "build_succeeded"
-
 
 def test_wait_for_build_and_relaunch_relaunch_timeout_reports_modal(tmp_path, capsys, monkeypatch):
     status_path = tmp_path / "BuildAndRelaunch.status.json"
@@ -1410,7 +1971,6 @@ def test_wait_for_build_and_relaunch_relaunch_timeout_reports_modal(tmp_path, ca
     assert result["status"] == "build_succeeded_relaunch_blocked"
     assert result["diagnostics"]["modal"]["title"] == "Restore Packages"
 
-
 def test_cmd_trigger_live_coding_forwards_scope_args():
     parser = build_parser()
     args = parser.parse_args([
@@ -1435,7 +1995,6 @@ def test_cmd_trigger_live_coding_forwards_scope_args():
         },
     )
 
-
 def test_cmd_reload_bridge_module_forwards_module():
     parser = build_parser()
     args = parser.parse_args(["reload-bridge-module", "--module", "SoftUEBridgeEditor"])
@@ -1448,13 +2007,11 @@ def test_cmd_reload_bridge_module_forwards_module():
         {"module": "SoftUEBridgeEditor"},
     )
 
-
 def test_parser_exec_console_command():
     parser = build_parser()
     args = parser.parse_args(["exec-console-command", "--world", "editor", "stat", "fps"])
     assert args.world == "editor"
     assert args.command_parts == ["stat", "fps"]
-
 
 def test_cmd_exec_console_command_forwards_args():
     parser = build_parser()
@@ -1468,7 +2025,6 @@ def test_cmd_exec_console_command_forwards_args():
         {"command": "stat fps", "world": "editor", "player_index": 1},
     )
 
-
 def test_cmd_exec_console_command_auto_starts_pie():
     parser = build_parser()
     args = parser.parse_args(["exec-console-command", "--auto-start-pie", "stat", "fps"])
@@ -1480,13 +2036,11 @@ def test_cmd_exec_console_command_auto_starts_pie():
 
     mock_ensure.assert_called_once()
 
-
 def test_parser_validate_class_path():
     parser = build_parser()
     args = parser.parse_args(["validate-class-path", "/Game/BP_Hero.BP_Hero_C", "--parent-depth", "5"])
     assert args.class_path == "/Game/BP_Hero.BP_Hero_C"
     assert args.parent_depth == 5
-
 
 def test_cmd_validate_class_path_forwards_args():
     parser = build_parser()
@@ -1497,14 +2051,12 @@ def test_cmd_validate_class_path_forwards_args():
 
     mock_run.assert_called_once_with("validate-class-path", {"class_path": "/Game/BP_Hero"})
 
-
 def test_parser_inspect_pawn_possession():
     parser = build_parser()
     args = parser.parse_args(["inspect-pawn-possession", "--class-filter", "Character", "--actor-name", "Hero"])
     assert args.class_filter == "Character"
     assert args.actor_name == "Hero"
     assert args.world == "pie"
-
 
 def test_cmd_inspect_pawn_possession_forwards_args():
     parser = build_parser()
@@ -1515,12 +2067,10 @@ def test_cmd_inspect_pawn_possession_forwards_args():
 
     mock_run.assert_called_once_with("inspect-pawn-possession", {"world": "editor", "class_filter": "Character"})
 
-
 def test_parser_release_asset_lock():
     parser = build_parser()
     args = parser.parse_args(["asset", "release-lock", "/Game/Blueprints/BP_Player"])
     assert args.asset_path == "/Game/Blueprints/BP_Player"
-
 
 def test_cmd_release_asset_lock_forwards_args():
     parser = build_parser()
@@ -1531,13 +2081,11 @@ def test_cmd_release_asset_lock_forwards_args():
 
     mock_run.assert_called_once_with("release-asset-lock", {"asset_path": "/Game/Blueprints/BP_Player"})
 
-
 def test_parser_query_asset_pattern_alias():
     parser = build_parser()
     args = parser.parse_args(["asset", "query", "--pattern", "CO_PC_Test", "--class", "CustomizableObject"])
     assert args.query == "CO_PC_Test"
     assert args.asset_class == "CustomizableObject"
-
 
 def test_cmd_query_asset_pattern_forwards_query():
     parser = build_parser()
@@ -1551,14 +2099,12 @@ def test_cmd_query_asset_pattern_forwards_query():
         {"query": "CO_PC_Test", "class": "CustomizableObject"},
     )
 
-
 def test_parser_inspect_customizable_object_graph():
     parser = build_parser()
     args = parser.parse_args(["mutable", "inspect", "graph", "/Game/Characters/CO_Hero.CO_Hero", "--include-node-properties"]
     )
     assert args.asset_path == "/Game/Characters/CO_Hero.CO_Hero"
     assert args.include_node_properties is True
-
 
 def test_cmd_inspect_customizable_object_graph_forwards_args():
     parser = build_parser()
@@ -1573,12 +2119,10 @@ def test_cmd_inspect_customizable_object_graph_forwards_args():
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero", "include_node_properties": True},
     )
 
-
 def test_parser_inspect_mutable_parameters():
     parser = build_parser()
     args = parser.parse_args(["mutable", "inspect", "parameters", "/Game/Characters/CO_Hero.CO_Hero"])
     assert args.asset_path == "/Game/Characters/CO_Hero.CO_Hero"
-
 
 def test_cmd_inspect_mutable_parameters_forwards_args():
     parser = build_parser()
@@ -1592,12 +2136,10 @@ def test_cmd_inspect_mutable_parameters_forwards_args():
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero"},
     )
 
-
 def test_parser_inspect_mutable_diagnostics():
     parser = build_parser()
     args = parser.parse_args(["mutable", "inspect", "diagnostics", "/Game/Characters/CO_Hero.CO_Hero"])
     assert args.asset_path == "/Game/Characters/CO_Hero.CO_Hero"
-
 
 def test_cmd_inspect_mutable_diagnostics_forwards_args():
     parser = build_parser()
@@ -1610,7 +2152,6 @@ def test_cmd_inspect_mutable_diagnostics_forwards_args():
         "inspect-mutable-diagnostics",
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero"},
     )
-
 
 def test_cmd_add_co_node_forwards_generic_node_args():
     parser = build_parser()
@@ -1640,7 +2181,6 @@ def test_cmd_add_co_node_forwards_generic_node_args():
         },
     )
 
-
 def test_cmd_add_co_parameter_defaults_node_class_and_parameter_name():
     parser = build_parser()
     args = parser.parse_args(["mutable", "graph", "add-parameter",
@@ -1662,7 +2202,6 @@ def test_cmd_add_co_parameter_defaults_node_class_and_parameter_name():
             "properties": {"ParameterName": "BodyHeight"},
         },
     )
-
 
 def test_cmd_add_co_mesh_option_forwards_mesh_property():
     parser = build_parser()
@@ -1687,7 +2226,6 @@ def test_cmd_add_co_mesh_option_forwards_mesh_property():
         },
     )
 
-
 def test_cmd_set_co_base_mesh_forwards_node_property():
     parser = build_parser()
     args = parser.parse_args(["mutable", "graph", "set-base-mesh",
@@ -1708,7 +2246,6 @@ def test_cmd_set_co_base_mesh_forwards_node_property():
             "properties": {"SkeletalMesh": "/Game/Meshes/SKM_Base.SKM_Base"},
         },
     )
-
 
 def test_cmd_set_co_layout_blocks_forwards_layout_payload():
     parser = build_parser()
@@ -1752,7 +2289,6 @@ def test_cmd_set_co_layout_blocks_forwards_layout_payload():
         },
     )
 
-
 def test_cmd_set_co_layout_blocks_forwards_source_uv_layout_target():
     parser = build_parser()
     args = parser.parse_args([
@@ -1789,7 +2325,6 @@ def test_cmd_set_co_layout_blocks_forwards_source_uv_layout_target():
         },
     )
 
-
 def test_cmd_add_co_group_child_forwards_pin_connection():
     parser = build_parser()
     args = parser.parse_args(["mutable", "graph", "add-group-child",
@@ -1817,7 +2352,6 @@ def test_cmd_add_co_group_child_forwards_pin_connection():
         },
     )
 
-
 def test_cmd_set_co_node_property_forwards_json_properties():
     parser = build_parser()
     args = parser.parse_args(["mutable", "graph", "set-node-property",
@@ -1839,7 +2373,6 @@ def test_cmd_set_co_node_property_forwards_json_properties():
             "properties": {"ParameterName": "Hat"},
         },
     )
-
 
 def test_cmd_connect_co_pins_forwards_connection():
     parser = build_parser()
@@ -1866,7 +2399,6 @@ def test_cmd_connect_co_pins_forwards_connection():
             "auto_regenerate": True,
         },
     )
-
 
 def test_cmd_connect_co_pins_can_disable_auto_regenerate():
     parser = build_parser()
@@ -1895,7 +2427,6 @@ def test_cmd_connect_co_pins_can_disable_auto_regenerate():
         },
     )
 
-
 def test_cmd_regenerate_co_node_pins_forwards_node_reference():
     from soft_ue_cli import __main__ as main_mod
 
@@ -1910,7 +2441,6 @@ def test_cmd_regenerate_co_node_pins_forwards_node_reference():
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero", "node": "node-guid-1"},
     )
 
-
 def test_cmd_compile_co_forwards_asset_path():
     parser = build_parser()
     args = parser.parse_args(["mutable", "compile", "/Game/Characters/CO_Hero.CO_Hero"])
@@ -1923,7 +2453,6 @@ def test_cmd_compile_co_forwards_asset_path():
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero"},
     )
 
-
 def test_cmd_compile_co_gather_references_forwards_flag():
     parser = build_parser()
     args = parser.parse_args(["mutable", "compile", "/Game/Characters/CO_Hero.CO_Hero", "--gather-references"])
@@ -1935,7 +2464,6 @@ def test_cmd_compile_co_gather_references_forwards_flag():
         "compile-customizable-object",
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero", "gather_references": True},
     )
-
 
 def test_cmd_create_co_from_spec_forwards_json_spec():
     parser = build_parser()
@@ -1960,7 +2488,6 @@ def test_cmd_create_co_from_spec_forwards_json_spec():
         },
     )
 
-
 def test_cmd_set_node_position_forwards_positions_for_customizable_object_paths():
     parser = build_parser()
     args = parser.parse_args(["blueprint", "node", "position",
@@ -1981,7 +2508,6 @@ def test_cmd_set_node_position_forwards_positions_for_customizable_object_paths(
         },
     )
 
-
 def test_cmd_set_node_position_accepts_mcp_native_positions_array():
     args = argparse.Namespace(
         asset_path="/Game/BP_Player",
@@ -2001,7 +2527,6 @@ def test_cmd_set_node_position_accepts_mcp_native_positions_array():
         },
     )
 
-
 def test_cmd_remove_co_node_forwards_node_reference():
     from soft_ue_cli import __main__ as main_mod
 
@@ -2015,7 +2540,6 @@ def test_cmd_remove_co_node_forwards_node_reference():
         "remove-customizable-object-node",
         {"asset_path": "/Game/Characters/CO_Hero.CO_Hero", "node": "node-guid-1"},
     )
-
 
 def test_cmd_wire_co_slot_from_table_forwards_macro_args():
     parser = build_parser()
@@ -2061,7 +2585,6 @@ def test_cmd_wire_co_slot_from_table_forwards_macro_args():
         },
     )
 
-
 def test_cmd_add_datatable_row_forwards_row_data_as_object():
     parser = build_parser()
     args = parser.parse_args(
@@ -2091,9 +2614,7 @@ def test_cmd_add_datatable_row_forwards_row_data_as_object():
         },
     )
 
-
 # -- capture-screenshot parser -------------------------------------------------
-
 
 def test_parser_capture_screenshot_window():
     parser = build_parser()
@@ -2101,13 +2622,11 @@ def test_parser_capture_screenshot_window():
     assert args.mode == "window"
     assert args.func == cmd_capture_screenshot
 
-
 def test_parser_capture_screenshot_tab():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "tab", "--window-name", "Blueprint"])
     assert args.mode == "tab"
     assert args.window_name == "Blueprint"
-
 
 def test_parser_capture_screenshot_region():
     parser = build_parser()
@@ -2115,25 +2634,21 @@ def test_parser_capture_screenshot_region():
     assert args.mode == "region"
     assert args.region == "0,0,800,600"
 
-
 def test_parser_capture_screenshot_viewport():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "viewport"])
     assert args.mode == "viewport"
-
 
 def test_parser_capture_screenshot_pie_window():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "pie-window"])
     assert args.mode == "pie-window"
 
-
 def test_parser_capture_screenshot_format_and_output():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "window", "--format", "png", "--output", "file"])
     assert args.format == "png"
     assert args.output == "file"
-
 
 def test_cmd_capture_screenshot_copies_to_requested_output_file(tmp_path, capsys):
     source = tmp_path / "bridge-shot.png"
@@ -2149,7 +2664,7 @@ def test_cmd_capture_screenshot_copies_to_requested_output_file(tmp_path, capsys
         str(output),
     ])
 
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": str(source), "mode": "file"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": str(source), "mode": "file"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
 
     mock_call.assert_called_once_with(
@@ -2164,60 +2679,53 @@ def test_cmd_capture_screenshot_copies_to_requested_output_file(tmp_path, capsys
     assert payload["file_path"] == str(output)
     assert payload["bridge_file_path"] == str(source)
 
-
 def test_parser_capture_screenshot_invalid_mode():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["capture", "screenshot", "--source", "invalid"])
 
-
 def test_cmd_capture_screenshot_window_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "window"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/shot.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/shot.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with("capture-screenshot", {"mode": "window"})
-
 
 def test_cmd_capture_screenshot_tab_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "tab", "--window-name", "OutputLog"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/shot.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/shot.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot", {"mode": "tab", "window_name": "OutputLog"}
     )
 
-
 def test_cmd_capture_screenshot_region_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "region", "--region", "10,20,800,600"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/shot.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/shot.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot", {"mode": "region", "region": [10, 20, 800, 600]}
     )
 
-
 def test_cmd_capture_screenshot_viewport_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "viewport", "--format", "png"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/shot.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/shot.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot", {"mode": "viewport", "format": "png"}
     )
 
-
 def test_cmd_capture_screenshot_window_can_opt_out_of_safe_mode():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "window", "--unsafe-slate-window-capture"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/shot.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/shot.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot", {"mode": "window", "safe_mode": False}
     )
-
 
 def test_cmd_capture_pie_screenshot_calls_safe_composited_mode():
     parser = build_parser()
@@ -2231,7 +2739,7 @@ def test_cmd_capture_pie_screenshot_calls_safe_composited_mode():
         "--cleanup-previous",
     ])
     assert args.func == cmd_capture_screenshot
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"image_base64": "..."}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"image_base64": "..."}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot",
@@ -2243,7 +2751,6 @@ def test_cmd_capture_pie_screenshot_calls_safe_composited_mode():
             "cleanup_previous": True,
         },
     )
-
 
 def test_removed_capture_pie_screenshot_can_opt_into_unsafe_slate_capture():
     parser = build_parser(include_removed=True)
@@ -2259,7 +2766,6 @@ def test_removed_capture_pie_screenshot_can_opt_into_unsafe_slate_capture():
             "safe_mode": False,
         },
     )
-
 
 def test_removed_capture_pie_screenshot_copies_to_requested_output_file(tmp_path, capsys):
     source = tmp_path / "bridge-pie-shot.png"
@@ -2283,7 +2789,6 @@ def test_removed_capture_pie_screenshot_copies_to_requested_output_file(tmp_path
     assert payload["file_path"] == str(output)
     assert payload["bridge_file_path"] == str(source)
 
-
 def test_cmd_capture_screenshot_all_options():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "window",
@@ -2296,7 +2801,7 @@ def test_cmd_capture_screenshot_all_options():
         "--color-mode",
         "grayscale",
     ])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"image_base64": "..."}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"image_base64": "..."}, BridgeCallMeta())) as mock_call:
         cmd_capture_screenshot(args)
     mock_call.assert_called_once_with(
         "capture-screenshot",
@@ -2309,14 +2814,12 @@ def test_cmd_capture_screenshot_all_options():
         },
     )
 
-
 def test_cmd_capture_screenshot_invalid_region_exits():
     parser = build_parser()
     args = parser.parse_args(["capture", "screenshot", "--source", "region", "--region", "a,b,c,d"])
     with pytest.raises(SystemExit) as exc:
         cmd_capture_screenshot(args)
     assert exc.value.code == 1
-
 
 def test_cmd_compare_umg_screenshot_outputs_structured_result(tmp_path, capsys):
     from PIL import Image
@@ -2346,7 +2849,6 @@ def test_cmd_compare_umg_screenshot_outputs_structured_result(tmp_path, capsys):
     assert data["annotated_diff_path"] == str(annotated)
     assert annotated.exists()
 
-
 def test_cmd_compare_umg_screenshot_accepts_mcp_array_crop(tmp_path, capsys):
     from PIL import Image
 
@@ -2367,7 +2869,6 @@ def test_cmd_compare_umg_screenshot_accepts_mcp_array_crop(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["captured"]["crop"] == [0, 0, 4, 4]
     assert data["similarity_score"] == 1.0
-
 
 def test_cmd_compare_umg_layout_outputs_structured_deltas(tmp_path, capsys):
     expected = tmp_path / "expected.json"
@@ -2390,7 +2891,6 @@ def test_cmd_compare_umg_layout_outputs_structured_deltas(tmp_path, capsys):
     assert data["success"] is False
     assert data["deltas"][0]["kind"] == "bounds"
 
-
 def test_cmd_extract_umg_layout_forwards_designer_request():
     parser = build_parser()
     args = parser.parse_args(["umg", "layout", "extract", "--source",
@@ -2411,7 +2911,6 @@ def test_cmd_extract_umg_layout_forwards_designer_request():
             "depth_limit": 12,
         },
     )
-
 
 def test_cmd_umg_layout_extract_designer_wraps_existing_extraction():
     parser = build_parser()
@@ -2435,7 +2934,6 @@ def test_cmd_umg_layout_extract_designer_wraps_existing_extraction():
             "depth_limit": 12,
         },
     )
-
 
 def test_cmd_umg_layout_compare_geometry_supports_subset(tmp_path, capsys):
     expected = tmp_path / "expected.json"
@@ -2466,7 +2964,6 @@ def test_cmd_umg_layout_compare_geometry_supports_subset(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["success"] is True
     assert data["summary"]["ignored_extra_widgets"] == 1
-
 
 def test_cmd_umg_layout_fit_writes_corrected_spec(tmp_path, capsys):
     concept = tmp_path / "concept.json"
@@ -2504,7 +3001,6 @@ def test_cmd_umg_layout_fit_writes_corrected_spec(tmp_path, capsys):
     assert data["corrections"][0]["widget"] == "A"
     assert json.loads(output.read_text(encoding="utf-8"))["root"]["children"][0]["slot"]["position"] == [20, 10]
 
-
 def test_cmd_umg_layout_compare_both_combines_geometry_and_pixel(tmp_path, capsys):
     from PIL import Image
 
@@ -2535,9 +3031,7 @@ def test_cmd_umg_layout_compare_both_combines_geometry_and_pixel(tmp_path, capsy
     assert data["geometry"]["success"] is True
     assert data["pixel"]["success"] is True
 
-
 # -- capture-viewport parser & cmd ---------------------------------------------
-
 
 def test_parser_capture_viewport_defaults():
     parser = build_parser()
@@ -2545,7 +3039,6 @@ def test_parser_capture_viewport_defaults():
     assert args.func == cmd_capture_viewport
     assert args.format is None
     assert args.output is None
-
 
 def test_parser_capture_viewport_with_options():
     parser = build_parser()
@@ -2572,22 +3065,19 @@ def test_parser_capture_viewport_with_options():
     assert args.color_mode == "monochrome"
     assert args.cleanup_previous is True
 
-
 def test_cmd_capture_viewport_default():
     parser = build_parser()
     args = parser.parse_args(["capture", "viewport"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/vp.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/vp.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_viewport(args)
     mock_call.assert_called_once_with("capture-viewport", {})
-
 
 def test_cmd_capture_viewport_with_format():
     parser = build_parser()
     args = parser.parse_args(["capture", "viewport", "--format", "png"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"file_path": "/tmp/vp.png"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"file_path": "/tmp/vp.png"}, BridgeCallMeta())) as mock_call:
         cmd_capture_viewport(args)
     mock_call.assert_called_once_with("capture-viewport", {"format": "png"})
-
 
 def test_cmd_capture_viewport_all_options():
     parser = build_parser()
@@ -2606,7 +3096,7 @@ def test_cmd_capture_viewport_all_options():
         "grayscale",
         "--cleanup-previous",
     ])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"image_base64": "..."}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"image_base64": "..."}, BridgeCallMeta())) as mock_call:
         cmd_capture_viewport(args)
     mock_call.assert_called_once_with(
         "capture-viewport",
@@ -2620,7 +3110,6 @@ def test_cmd_capture_viewport_all_options():
             "cleanup_previous": True,
         },
     )
-
 
 def test_capture_viewport_family_routes_to_existing_tool():
     parser = build_parser()
@@ -2651,7 +3140,6 @@ def test_capture_viewport_family_routes_to_existing_tool():
         },
     )
 
-
 def test_capture_screenshot_family_routes_to_existing_tool():
     parser = build_parser()
     args = parser.parse_args([
@@ -2678,7 +3166,6 @@ def test_capture_screenshot_family_routes_to_existing_tool():
         },
     )
 
-
 def test_capture_screenshot_family_region_uses_region_arg():
     parser = build_parser()
     args = parser.parse_args([
@@ -2701,7 +3188,6 @@ def test_capture_screenshot_family_region_uses_region_arg():
         },
     )
 
-
 @pytest.mark.parametrize(
     ("argv", "expected_attrs"),
     [
@@ -2716,6 +3202,7 @@ def test_capture_screenshot_family_region_uses_region_arg():
         (["blueprint", "inspect", "/Game/Blueprints/BP_Player"], {"command": "blueprint", "blueprint_action": "inspect"}),
         (["blueprint", "graph", "inspect", "/Game/Blueprints/BP_Player"], {"command": "blueprint", "blueprint_action": "graph", "blueprint_graph_action": "inspect"}),
         (["blueprint", "node", "add", "/Game/Blueprints/BP_Player", "K2Node_CallFunction"], {"command": "blueprint", "blueprint_action": "node", "blueprint_node_action": "add"}),
+        (["cloth", "query", "/Game/Characters/SK_Cape"], {"command": "cloth", "cloth_action": "query"}),
     ],
 )
 def test_canonical_command_families_parse_as_canonical_commands(argv, expected_attrs):
@@ -2723,7 +3210,6 @@ def test_canonical_command_families_parse_as_canonical_commands(argv, expected_a
 
     for attr, expected in expected_attrs.items():
         assert getattr(args, attr) == expected
-
 
 @pytest.mark.parametrize("argv", [
     ["query-blueprint", "/Game/Blueprints/BP_Player"],
@@ -2736,7 +3222,6 @@ def test_canonical_command_families_parse_as_canonical_commands(argv, expected_a
 def test_removed_flat_commands_are_no_longer_supported(argv):
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv)
-
 
 def test_canonical_command_family_normalization_preserves_root_options():
     args = build_parser().parse_args([
@@ -2754,7 +3239,6 @@ def test_canonical_command_family_normalization_preserves_root_options():
     assert args.command == "blueprint"
     assert args.blueprint_action == "graph"
     assert args.blueprint_graph_action == "inspect"
-
 
 def test_mutable_graph_add_node_family_routes_to_existing_tool():
     args = build_parser().parse_args([
@@ -2779,7 +3263,6 @@ def test_mutable_graph_add_node_family_routes_to_existing_tool():
         },
     )
 
-
 def test_statetree_state_add_family_routes_to_existing_tool():
     args = build_parser().parse_args([
         "statetree",
@@ -2803,7 +3286,6 @@ def test_statetree_state_add_family_routes_to_existing_tool():
         },
     )
 
-
 def test_anim_rewind_snapshot_family_routes_to_existing_tool():
     args = build_parser().parse_args([
         "anim",
@@ -2826,6 +3308,599 @@ def test_anim_rewind_snapshot_family_routes_to_existing_tool():
         },
     )
 
+def test_cloth_create_family_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "create",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--lod-index",
+        "0",
+        "--section-index",
+        "2",
+        "--physics-asset",
+        "/Game/Physics/PA_Character",
+        "--bind",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-create",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "section_index": 2,
+            "physics_asset": "/Game/Physics/PA_Character",
+            "bind": True,
+            "save": True,
+        },
+    )
+
+def test_cloth_create_accepts_multiple_section_indices():
+    args = build_parser().parse_args([
+        "cloth",
+        "create",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--section-index",
+        "0,1",
+        "--section-index",
+        "2",
+        "--bind",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-create",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "section_indices": [0, 1, 2],
+            "bind": True,
+        },
+    )
+
+def test_cloth_create_accepts_weld_tolerance():
+    args = build_parser().parse_args([
+        "cloth",
+        "create",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--section-index",
+        "0,1",
+        "--weld-tolerance",
+        "0.25",
+        "--bind",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-create",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "section_indices": [0, 1],
+            "weld_tolerance": 0.25,
+            "bind": True,
+        },
+    )
+
+def test_cloth_chaos_query_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-query",
+        "/Game/Cloth/CA_Cape",
+        "--include-nodes",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-query",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "include_nodes": True,
+        },
+    )
+
+def test_cloth_chaos_query_routes_gap_and_weight_diagnostics_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-query",
+        "/Game/Cloth/CA_Cape",
+        "--gap-tolerance",
+        "0.25",
+        "--gap-limit",
+        "32",
+        "--dump-weights",
+        "--weight-map",
+        "MaxDistance",
+        "--weight-limit",
+        "64",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-query",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "gap_tolerance": 0.25,
+            "gap_limit": 32,
+            "dump_weights": True,
+            "weight_map": "MaxDistance",
+            "weight_limit": 64,
+        },
+    )
+
+def test_cloth_convert_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "convert",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--output-asset",
+        "/Game/Cloth/CA_Cape",
+        "--no-save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-convert",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "output_asset": "/Game/Cloth/CA_Cape",
+            "save": False,
+        },
+    )
+
+def test_cloth_chaos_stitch_routes_vertex_pairs_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-stitch",
+        "/Game/Cloth/CA_Cape",
+        "--lod-index",
+        "1",
+        "--vertex-pairs",
+        "[[10, 20], [11, 21]]",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-stitch",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 1,
+            "mode": "pairs",
+            "index_space": "2d",
+            "vertex_pairs": [[10, 20], [11, 21]],
+            "save": True,
+        },
+    )
+
+@pytest.mark.parametrize("vertex_pairs", [
+    "[[10.5, 20]]",
+    "[[true, 20]]",
+    "[[\"10\", 20]]",
+])
+def test_cloth_chaos_stitch_rejects_non_integer_vertex_pairs(vertex_pairs):
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-stitch",
+        "/Game/Cloth/CA_Cape",
+        "--vertex-pairs",
+        vertex_pairs,
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool") as mock_run:
+        with pytest.raises(ValueError, match="--vertex-pairs must contain JSON integer vertex ids"):
+            args.func(args)
+
+    mock_run.assert_not_called()
+
+def test_cloth_chaos_stitch_routes_proximity_ranges_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-stitch",
+        "/Game/Cloth/CA_Cape",
+        "--mode",
+        "proximity",
+        "--first-vertices",
+        "0-2,8",
+        "--second-vertices",
+        "10,12-13",
+        "--tolerance",
+        "1.5",
+        "--index-space",
+        "3d",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-stitch",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 0,
+            "mode": "proximity",
+            "index_space": "3d",
+            "first_vertices": [0, 1, 2, 8],
+            "second_vertices": [10, 12, 13],
+            "tolerance": 1.5,
+        },
+    )
+
+def test_cloth_chaos_stitch_dry_run_routes_without_save_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-stitch",
+        "/Game/Cloth/CA_Cape",
+        "--mode",
+        "proximity",
+        "--first-vertices",
+        "0-1",
+        "--second-vertices",
+        "10-11",
+        "--tolerance",
+        "0.1",
+        "--dry-run",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-stitch",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 0,
+            "mode": "proximity",
+            "index_space": "2d",
+            "first_vertices": [0, 1],
+            "second_vertices": [10, 11],
+            "tolerance": 0.1,
+            "dry_run": True,
+        },
+    )
+
+def test_cloth_chaos_set_config_routes_json_properties_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-set-config",
+        "/Game/Cloth/CA_Cape",
+        "--lod-index",
+        "0",
+        "--properties",
+        "{\"XPBDEdgeSpringStiffness\": [0.2, 0.8], \"NumIterations\": 12}",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-set-config",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 0,
+            "properties": {
+                "XPBDEdgeSpringStiffness": [0.2, 0.8],
+                "NumIterations": 12,
+            },
+            "save": True,
+        },
+    )
+
+def test_cloth_chaos_set_weightmap_routes_explicit_vertices_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-set-weightmap",
+        "/Game/Cloth/CA_Cape",
+        "--lod-index",
+        "1",
+        "--weight-map",
+        "MaxDistance",
+        "--vertices",
+        "0-2,8",
+        "--value",
+        "0",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-set-weightmap",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 1,
+            "weight_map": "MaxDistance",
+            "vertices": [0, 1, 2, 8],
+            "value": 0.0,
+            "save": True,
+        },
+    )
+
+def test_cloth_chaos_set_weightmap_routes_spatial_selection_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "chaos-set-weightmap",
+        "/Game/Cloth/CA_Cape",
+        "--z-min",
+        "120",
+        "--center",
+        "0,0,150",
+        "--radius",
+        "25",
+        "--value",
+        "5",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-chaos-set-weightmap",
+        {
+            "cloth_asset": "/Game/Cloth/CA_Cape",
+            "lod_index": 0,
+            "weight_map": "MaxDistance",
+            "z_min": 120.0,
+            "center": [0.0, 0.0, 150.0],
+            "radius": 25.0,
+            "value": 5.0,
+        },
+    )
+
+def test_cloth_apply_weightmap_constant_family_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "apply-weightmap",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--lod-index",
+        "0",
+        "--target",
+        "max-distance",
+        "--rule",
+        "constant",
+        "--value",
+        "25",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-apply-weightmap",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "target": "max-distance",
+            "rule": "constant",
+            "value": 25.0,
+            "save": True,
+        },
+    )
+
+def test_cloth_apply_weightmap_anim_drive_target_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "apply-weightmap",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--target",
+        "anim-drive-stiffness",
+        "--rule",
+        "constant",
+        "--value",
+        "0.75",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-apply-weightmap",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "target": "anim-drive-stiffness",
+            "rule": "constant",
+            "value": 0.75,
+        },
+    )
+
+def test_cloth_apply_weightmap_bone_distance_family_routes_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "apply-weightmap",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--rule",
+        "bone-distance",
+        "--root-bone",
+        "spine_03",
+        "--min-distance",
+        "0",
+        "--max-distance",
+        "80",
+        "--curve",
+        "smooth",
+        "--invert",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-apply-weightmap",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 0,
+            "target": "max-distance",
+            "rule": "bone-distance",
+            "root_bone": "spine_03",
+            "min_distance": 0.0,
+            "max_distance": 80.0,
+            "curve": "smooth",
+            "invert": True,
+            "save": True,
+        },
+    )
+
+def test_cloth_apply_weightmap_spatial_ramp_routes_selection_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "apply-weightmap",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--lod-index",
+        "1",
+        "--target",
+        "max-distance",
+        "--rule",
+        "spatial",
+        "--z-min",
+        "100",
+        "--z-max",
+        "180",
+        "--center",
+        "0,0,140",
+        "--radius",
+        "60",
+        "--min-value",
+        "0",
+        "--max-value",
+        "20",
+        "--curve",
+        "smooth",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-apply-weightmap",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 1,
+            "target": "max-distance",
+            "rule": "spatial",
+            "z_min": 100.0,
+            "z_max": 180.0,
+            "center": [0.0, 0.0, 140.0],
+            "radius": 60.0,
+            "min_value": 0.0,
+            "max_value": 20.0,
+            "curve": "smooth",
+            "save": True,
+        },
+    )
+
+def test_cloth_weld_routes_legacy_physical_mesh_selection_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "weld",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--lod-index",
+        "1",
+        "--section-index",
+        "2",
+        "--tolerance",
+        "0.25",
+        "--z-min",
+        "100",
+        "--z-max",
+        "140",
+        "--center",
+        "0,0,120",
+        "--radius",
+        "30",
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-weld",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "lod_index": 1,
+            "section_index": 2,
+            "tolerance": 0.25,
+            "z_min": 100.0,
+            "z_max": 140.0,
+            "center": [0.0, 0.0, 120.0],
+            "radius": 30.0,
+            "save": True,
+        },
+    )
+
+def test_cloth_set_config_family_routes_properties_json_to_bridge_tool():
+    args = build_parser().parse_args([
+        "cloth",
+        "set-config",
+        "/Game/Characters/SK_Cape",
+        "--asset-name",
+        "CapeCloth",
+        "--properties",
+        '{"GravityScale":0.75,"SelfCollisionThickness":1.2}',
+        "--save",
+    ])
+
+    with patch("soft_ue_cli.__main__._run_tool", return_value={"success": True}) as mock_run:
+        args.func(args)
+
+    mock_run.assert_called_once_with(
+        "cloth-set-config",
+        {
+            "skeletal_mesh": "/Game/Characters/SK_Cape",
+            "asset_name": "CapeCloth",
+            "properties": {"GravityScale": 0.75, "SelfCollisionThickness": 1.2},
+            "save": True,
+        },
+    )
 
 def test_anim_retarget_repoint_references_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -2861,7 +3936,6 @@ def test_anim_retarget_repoint_references_routes_to_bridge_tool():
         },
     )
 
-
 def test_anim_retarget_blueprint_routes_to_bridge_tool():
     args = build_parser().parse_args([
         "anim",
@@ -2896,7 +3970,6 @@ def test_anim_retarget_blueprint_routes_to_bridge_tool():
             "save": True,
         },
     )
-
 
 def test_anim_retarget_blueprint_routes_optional_anim_map_to_bridge_tool():
     args = build_parser().parse_args([
@@ -2935,7 +4008,6 @@ def test_anim_retarget_blueprint_routes_optional_anim_map_to_bridge_tool():
             "save": True,
         },
     )
-
 
 def test_anim_montage_set_slot_animation_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -2976,7 +4048,6 @@ def test_anim_montage_set_slot_animation_routes_to_bridge_tool():
         },
     )
 
-
 def test_anim_montage_set_slot_animation_uses_default_slot_and_minimal_payload():
     args = build_parser().parse_args([
         "anim",
@@ -2996,7 +4067,6 @@ def test_anim_montage_set_slot_animation_uses_default_slot_and_minimal_payload()
             "anim_path": "/Game/Anim/AS_Attack_RTG",
         },
     )
-
 
 def test_anim_montage_inspect_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -3018,7 +4088,6 @@ def test_anim_montage_inspect_routes_to_bridge_tool():
             "include": "notifies,sections,slots",
         },
     )
-
 
 def test_anim_retarget_sequence_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -3055,7 +4124,6 @@ def test_anim_retarget_sequence_routes_to_bridge_tool():
         },
     )
 
-
 def test_anim_pose_search_inspect_routes_to_bridge_tool():
     args = build_parser().parse_args([
         "anim",
@@ -3073,7 +4141,6 @@ def test_anim_pose_search_inspect_routes_to_bridge_tool():
             "schema_path": "/Game/Motion/PS_Hero",
         },
     )
-
 
 def test_anim_pose_search_remap_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -3107,7 +4174,6 @@ def test_anim_pose_search_remap_routes_to_bridge_tool():
             "save": True,
         },
     )
-
 
 def test_anim_pose_search_database_repoint_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -3144,7 +4210,6 @@ def test_anim_pose_search_database_repoint_routes_to_bridge_tool():
         },
     )
 
-
 def test_asset_repoint_references_routes_to_bridge_tool():
     args = build_parser().parse_args([
         "asset",
@@ -3174,7 +4239,6 @@ def test_asset_repoint_references_routes_to_bridge_tool():
             "save": True,
         },
     )
-
 
 def test_asset_skeletal_socket_create_routes_to_bridge_tool():
     args = build_parser().parse_args([
@@ -3211,7 +4275,6 @@ def test_asset_skeletal_socket_create_routes_to_bridge_tool():
         },
     )
 
-
 def test_asset_skeletal_socket_remove_routes_to_bridge_tool():
     args = build_parser().parse_args([
         "asset",
@@ -3235,7 +4298,6 @@ def test_asset_skeletal_socket_remove_routes_to_bridge_tool():
             "save": True,
         },
     )
-
 
 def test_automation_tests_run_family_routes_to_existing_tool():
     args = build_parser().parse_args([
@@ -3266,7 +4328,6 @@ def test_automation_tests_run_family_routes_to_existing_tool():
         timeout=210.0,
     )
 
-
 def test_asset_preview_family_routes_to_existing_tool():
     args = build_parser().parse_args([
         "asset",
@@ -3286,7 +4347,6 @@ def test_asset_preview_family_routes_to_existing_tool():
             "resolution": 512,
         },
     )
-
 
 def test_blueprint_graph_inspect_family_routes_to_existing_tool():
     args = build_parser().parse_args([
@@ -3309,12 +4369,10 @@ def test_blueprint_graph_inspect_family_routes_to_existing_tool():
         },
     )
 
-
 def test_parser_trigger_input_target_accepts_negative_vector_with_space():
     parser = build_parser()
     args = parser.parse_args(["trigger-input", "move-to", "--target", "-2000,-4190,88"])
     assert args.target == "-2000,-4190,88"
-
 
 def test_cmd_trigger_input_forwards_negative_target_vector():
     parser = build_parser()
@@ -3328,9 +4386,7 @@ def test_cmd_trigger_input_forwards_negative_target_vector():
         {"action": "move-to", "target": [-2000.0, -4190.0, 88.0]},
     )
 
-
 # -- inspect-runtime-widgets ---------------------------------------------------
-
 
 def test_parser_inspect_runtime_widgets_defaults():
     parser = build_parser(include_removed=True)
@@ -3344,7 +4400,6 @@ def test_parser_inspect_runtime_widgets_defaults():
     assert args.no_geometry is False
     assert args.no_properties is False
     assert args.root_widget is None
-
 
 def test_parser_inspect_runtime_widgets_all_args():
     parser = build_parser(include_removed=True)
@@ -3367,7 +4422,6 @@ def test_parser_inspect_runtime_widgets_all_args():
     assert args.no_geometry is True
     assert args.no_properties is True
     assert args.root_widget == "WBP_HUD_C_0"
-
 
 def test_umg_runtime_inspect_routes_to_runtime_widget_tool():
     parser = build_parser()
@@ -3394,9 +4448,7 @@ def test_umg_runtime_inspect_routes_to_runtime_widget_tool():
         },
     )
 
-
 # -- apply-widget-tree ---------------------------------------------------------
-
 
 def test_parser_apply_widget_tree_json_spec():
     parser = build_parser()
@@ -3417,7 +4469,6 @@ def test_parser_apply_widget_tree_json_spec():
     assert args.compile is True
     assert args.save is True
     assert args.checkout is True
-
 
 def test_cmd_apply_widget_tree_forwards_spec_file(tmp_path):
     spec_path = tmp_path / "widget_tree.json"
@@ -3471,7 +4522,6 @@ def test_cmd_apply_widget_tree_forwards_spec_file(tmp_path):
         },
     )
 
-
 def test_cmd_apply_widget_tree_requires_spec_or_file(capsys):
     parser = build_parser()
     args = parser.parse_args(["umg", "designer", "apply", "/Game/UI/WBP_Menu"])
@@ -3481,7 +4531,6 @@ def test_cmd_apply_widget_tree_requires_spec_or_file(capsys):
 
     assert exc.value.code == 1
     assert "either --spec or --spec-file is required" in capsys.readouterr().err
-
 
 def test_cmd_wire_widget_navigation_forwards_bindings_file(tmp_path):
     bindings_path = tmp_path / "navigation.json"
@@ -3527,7 +4576,6 @@ def test_cmd_wire_widget_navigation_forwards_bindings_file(tmp_path):
         },
     )
 
-
 def test_cmd_wire_widget_navigation_forwards_allow_pie():
     parser = build_parser()
     args = parser.parse_args(["umg", "navigation", "wire",
@@ -3549,7 +4597,6 @@ def test_cmd_wire_widget_navigation_forwards_allow_pie():
         },
     )
 
-
 def test_cmd_wire_widget_navigation_requires_bindings(capsys):
     parser = build_parser()
     args = parser.parse_args(["umg", "navigation", "wire", "/Game/UI/WBP_Menu"])
@@ -3559,7 +4606,6 @@ def test_cmd_wire_widget_navigation_requires_bindings(capsys):
 
     assert exc.value.code == 1
     assert "either --bindings or --bindings-file is required" in capsys.readouterr().err
-
 
 def test_cmd_verify_umg_workflow_forwards_contract_args():
     clicks = '[{"button":"StartButton","expect_active_index":1,"switcher":"ScreenSwitcher"}]'
@@ -3601,7 +4647,6 @@ def test_cmd_verify_umg_workflow_forwards_contract_args():
         },
     )
 
-
 def test_umg_designer_apply_routes_to_apply_widget_tree():
     parser = build_parser()
     args = parser.parse_args([
@@ -3626,7 +4671,6 @@ def test_umg_designer_apply_routes_to_apply_widget_tree():
             "compile": True,
         },
     )
-
 
 def test_umg_navigation_wire_routes_to_wire_widget_navigation():
     parser = build_parser()
@@ -3653,7 +4697,6 @@ def test_umg_navigation_wire_routes_to_wire_widget_navigation():
         },
     )
 
-
 def test_umg_layout_compare_routes_to_existing_layout_handler(tmp_path, capsys):
     expected = tmp_path / "expected.json"
     actual = tmp_path / "actual.json"
@@ -3675,7 +4718,6 @@ def test_umg_layout_compare_routes_to_existing_layout_handler(tmp_path, capsys):
 
     data = json.loads(capsys.readouterr().out)
     assert data["success"] is True
-
 
 def test_umg_layout_extract_runtime_resolves_preview_handle(capsys):
     parser = build_parser()
@@ -3735,7 +4777,6 @@ def test_umg_layout_extract_runtime_resolves_preview_handle(capsys):
     assert payload["preview_handle"] == "softue-preview:abc"
     assert payload["runtime_root_widget"] == "WBP_Menu_C_0"
     assert payload["widgets"][0]["name"] == "WBP_Menu_C_0"
-
 
 def test_umg_workflow_iterate_layout_writes_manifest(tmp_path, capsys):
     concept = tmp_path / "concept.json"
@@ -3832,7 +4873,6 @@ def test_umg_workflow_iterate_layout_writes_manifest(tmp_path, capsys):
     assert Path(written["iterations"][0]["corrected_spec"]).exists()
     assert Path(written["iterations"][0]["screenshot"]).read_bytes() == b"png"
 
-
 def test_umg_preview_replace_routes_to_preview_primitive():
     parser = build_parser()
     args = parser.parse_args([
@@ -3860,7 +4900,6 @@ def test_umg_preview_replace_routes_to_preview_primitive():
             "capture_after": True,
         },
     )
-
 
 def test_umg_preview_replace_forwards_viewport_layout_controls():
     parser = build_parser()
@@ -3896,7 +4935,6 @@ def test_umg_preview_replace_forwards_viewport_layout_controls():
         },
     )
 
-
 def test_umg_preview_remove_routes_to_preview_primitive():
     parser = build_parser()
     args = parser.parse_args([
@@ -3916,7 +4954,6 @@ def test_umg_preview_remove_routes_to_preview_primitive():
             "preview_handle": "softue-preview:world:widget:guid",
         },
     )
-
 
 def test_umg_verify_navigation_routes_to_verify_umg_workflow():
     parser = build_parser()
@@ -3941,9 +4978,7 @@ def test_umg_verify_navigation_routes_to_verify_umg_workflow():
         },
     )
 
-
 # -- set-node-property (issue #28) --------------------------------------------
-
 
 def test_parser_set_node_property_positional_args():
     parser = build_parser()
@@ -3959,7 +4994,6 @@ def test_parser_set_node_property_positional_args():
     assert args.node_guid == "AABB1122-CCDD-EEFF-0011-223344556677"
     assert args.properties == '{"SpringStiffness": 450}'
 
-
 def test_parser_set_node_property_alpha():
     parser = build_parser()
     args = parser.parse_args([
@@ -3974,9 +5008,7 @@ def test_parser_set_node_property_alpha():
     assert args.node_guid == "GUID-0001"
     assert args.properties == '{"Alpha": 0.08}'
 
-
 # -- query-mpc (issue #32) ----------------------------------------------------
-
 
 def test_parser_query_mpc_defaults():
     parser = build_parser()
@@ -3987,12 +5019,10 @@ def test_parser_query_mpc_defaults():
     assert args.value is None
     assert args.world is None
 
-
 def test_parser_query_mpc_read_action():
     parser = build_parser()
     args = parser.parse_args(["query-mpc", "/Game/Materials/MPC_Wind", "--action", "read"])
     assert args.action == "read"
-
 
 def test_parser_query_mpc_write_action():
     parser = build_parser()
@@ -4007,7 +5037,6 @@ def test_parser_query_mpc_write_action():
     assert args.parameter_name == "WindIntensity"
     assert args.value == "0.5"
 
-
 def test_parser_query_mpc_write_vector():
     parser = build_parser()
     args = parser.parse_args([
@@ -4020,24 +5049,20 @@ def test_parser_query_mpc_write_vector():
     assert args.parameter_name == "WindColor"
     assert args.value == "[1.0,0.5,0.0,1.0]"
 
-
 def test_parser_query_mpc_world():
     parser = build_parser()
     args = parser.parse_args(["query-mpc", "/Game/Materials/MPC_Wind", "--world", "pie"])
     assert args.world == "pie"
-
 
 def test_parser_query_mpc_invalid_action_exits():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["query-mpc", "/Game/Materials/MPC_Wind", "--action", "delete"])
 
-
 def test_parser_query_mpc_invalid_world_exits():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["query-mpc", "/Game/Materials/MPC_Wind", "--world", "server"])
-
 
 def test_cmd_query_mpc_invalid_scalar_value_exits():
     parser = build_parser()
@@ -4052,9 +5077,7 @@ def test_cmd_query_mpc_invalid_scalar_value_exits():
         cmd_query_mpc(args)
     assert exc.value.code == 1
 
-
 # -- save-asset --checkout (issue #30) ----------------------------------------
-
 
 def test_parser_save_asset_defaults():
     parser = build_parser()
@@ -4062,22 +5085,18 @@ def test_parser_save_asset_defaults():
     assert args.asset_path == "/Game/Blueprints/BP_Player"
     assert args.checkout is False
 
-
 def test_parser_save_asset_checkout_flag():
     parser = build_parser()
     args = parser.parse_args(["asset", "save", "/Game/Blueprints/BP_Player", "--checkout"])
     assert args.asset_path == "/Game/Blueprints/BP_Player"
     assert args.checkout is True
 
-
 # -- query-material --parent-chain (issue #31) --------------------------------
-
 
 def test_parser_query_material_parent_chain_default():
     parser = build_parser()
     args = parser.parse_args(["query-material", "/Game/Materials/M_Rock"])
     assert args.parent_chain is False
-
 
 def test_parser_query_material_parent_chain_flag():
     parser = build_parser()
@@ -4085,9 +5104,7 @@ def test_parser_query_material_parent_chain_flag():
     assert args.asset_path == "/Game/Materials/MI_Rock"
     assert args.parent_chain is True
 
-
 # -- query-material MaterialFunction support (issue #39) ----------------------
-
 
 def test_parser_query_material_function_path():
     parser = build_parser()
@@ -4095,18 +5112,14 @@ def test_parser_query_material_function_path():
     assert args.asset_path == "/Game/Functions/MF_DistanceFade"
     assert args.include == "graph"
 
-
 # -- compile-material (issue #43) ---------------------------------------------
-
 
 def test_parser_compile_material():
     parser = build_parser()
     args = parser.parse_args(["compile-material", "/Game/Materials/M_Rock"])
     assert args.asset_path == "/Game/Materials/M_Rock"
 
-
 # -- get-logs Unicode encoding (issue #40) ------------------------------------
-
 
 def test_print_json_unicode_survives_replace_encoding(capsys):
     """Ensure _print_json doesn't crash on chars outside the current locale."""
@@ -4114,7 +5127,6 @@ def test_print_json_unicode_survives_replace_encoding(capsys):
     _print_json({"msg": "hello \u2014 world"})
     captured = capsys.readouterr()
     assert "hello" in captured.out
-
 
 def test_print_json_unicode_falls_back_for_strict_cp949_stdout(monkeypatch):
     """Ensure _print_json remains usable before main() can reconfigure stdout."""
@@ -4134,21 +5146,17 @@ def test_print_json_unicode_falls_back_for_strict_cp949_stdout(monkeypatch):
     assert "\\u2014" in output
     assert "\\ud55c\\uae00" in output
 
-
 # -- query-level --include-foliage / --include-grass (issue #34) --------------
-
 
 def test_parser_query_level_include_foliage_default():
     parser = build_parser()
     args = parser.parse_args(["query-level"])
     assert args.include_foliage is False
 
-
 def test_parser_query_level_include_grass_default():
     parser = build_parser()
     args = parser.parse_args(["query-level"])
     assert args.include_grass is False
-
 
 def test_parser_query_level_include_foliage_flag():
     parser = build_parser()
@@ -4156,13 +5164,11 @@ def test_parser_query_level_include_foliage_flag():
     assert args.include_foliage is True
     assert args.include_grass is False
 
-
 def test_parser_query_level_include_grass_flag():
     parser = build_parser()
     args = parser.parse_args(["query-level", "--include-grass"])
     assert args.include_grass is True
     assert args.include_foliage is False
-
 
 def test_parser_query_level_both_foliage_and_grass():
     parser = build_parser()
@@ -4170,9 +5176,7 @@ def test_parser_query_level_both_foliage_and_grass():
     assert args.include_foliage is True
     assert args.include_grass is True
 
-
 # -- MSYS path mangling fix (issue #44) ---------------------------------------
-
 
 def test_fix_msys_path_mangling():
     from soft_ue_cli.__main__ import _fix_msys_asset_path
@@ -4186,7 +5190,6 @@ def test_fix_msys_path_mangling():
     # Empty/None
     assert _fix_msys_asset_path("") == ""
 
-
 def test_cmd_add_graph_node_invalid_position_exits():
     parser = build_parser()
     args = parser.parse_args(["blueprint", "node", "add",
@@ -4197,7 +5200,6 @@ def test_cmd_add_graph_node_invalid_position_exits():
     with pytest.raises(SystemExit) as exc:
         cmd_add_graph_node(args)
     assert exc.value.code == 1
-
 
 def test_cmd_add_graph_node_accepts_mcp_native_position_array():
     args = argparse.Namespace(
@@ -4224,9 +5226,7 @@ def test_cmd_add_graph_node_accepts_mcp_native_position_array():
         },
     )
 
-
 # -- AnimBlueprint state machine authoring -----------------------------------
-
 
 def test_cmd_add_anim_state_machine_calls_tool():
     parser = build_parser()
@@ -4252,7 +5252,6 @@ def test_cmd_add_anim_state_machine_calls_tool():
         },
     )
 
-
 def test_cmd_add_anim_state_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["anim", "state", "add",
@@ -4276,7 +5275,6 @@ def test_cmd_add_anim_state_calls_tool():
             "position": [480, 120],
         },
     )
-
 
 def test_cmd_add_anim_transition_calls_tool():
     parser = build_parser()
@@ -4306,9 +5304,7 @@ def test_cmd_add_anim_transition_calls_tool():
         },
     )
 
-
 # -- query-enum / query-struct ------------------------------------------------
-
 
 def test_parser_query_enum():
     parser = build_parser()
@@ -4316,14 +5312,12 @@ def test_parser_query_enum():
     assert args.asset_path == "/Game/Data/E_MenuState"
     assert args.func == cmd_query_enum
 
-
 def test_cmd_query_enum_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["query-enum", "/Game/Data/E_MenuState"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"enumerators": []}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"enumerators": []}, BridgeCallMeta())) as mock_call:
         cmd_query_enum(args)
     mock_call.assert_called_once_with("query-enum", {"asset_path": "/Game/Data/E_MenuState"})
-
 
 def test_parser_query_struct():
     parser = build_parser()
@@ -4331,17 +5325,14 @@ def test_parser_query_struct():
     assert args.asset_path == "/Game/Data/S_Result"
     assert args.func == cmd_query_struct
 
-
 def test_cmd_query_struct_calls_tool():
     parser = build_parser()
     args = parser.parse_args(["query-struct", "/Game/Data/S_Result"])
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"members": []}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"members": []}, BridgeCallMeta())) as mock_call:
         cmd_query_struct(args)
     mock_call.assert_called_once_with("query-struct", {"asset_path": "/Game/Data/S_Result"})
 
-
 # -- batch-call ----------------------------------------------------------------
-
 
 def test_batch_call_parses_required_json():
     payload = '[{"tool":"pie-tick","args":{"frames":10}}]'
@@ -4351,13 +5342,11 @@ def test_batch_call_parses_required_json():
     assert args.calls_file is None
     assert args.continue_on_error is False
 
-
 def test_batch_call_parses_file_and_continue_flag():
     args = build_parser().parse_args(["batch-call", "--calls-file", "scenario.json", "--continue-on-error"])
     assert args.calls is None
     assert args.calls_file == "scenario.json"
     assert args.continue_on_error is True
-
 
 def test_batch_call_forwards_to_run_tool():
     ns = argparse.Namespace(
@@ -4369,16 +5358,13 @@ def test_batch_call_forwards_to_run_tool():
         cmd_batch_call(ns)
     mock_run.assert_called_once_with("batch-call", {"calls": [{"tool": "pie-tick", "args": {"frames": 5}}]})
 
-
 def test_batch_call_rejects_non_array_json():
     ns = argparse.Namespace(calls='{"tool":"pie-tick"}', calls_file=None, continue_on_error=False)
     with pytest.raises(SystemExit) as exc:
         cmd_batch_call(ns)
     assert exc.value.code == 1
 
-
 # -- pie-session ---------------------------------------------------------------
-
 
 def test_pie_session_continue_on_blueprint_compile_errors_forwards_action():
     args = build_parser().parse_args([
@@ -4388,14 +5374,13 @@ def test_pie_session_continue_on_blueprint_compile_errors_forwards_action():
     ])
     assert args.func == cmd_pie_session
 
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"state": "starting"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"state": "starting"}, BridgeCallMeta())) as mock_call:
         cmd_pie_session(args)
 
     mock_call.assert_called_once_with(
         "pie-session",
         {"action": "start", "blueprint_error_action": "continue"},
     )
-
 
 def test_pie_session_blueprint_error_report_preflight_forwards_options():
     args = build_parser().parse_args([
@@ -4406,7 +5391,7 @@ def test_pie_session_blueprint_error_report_preflight_forwards_options():
         "--preflight-blueprints",
     ])
 
-    with patch("soft_ue_cli.__main__.call_tool", return_value={"state": "blocked_by_blueprint_compile_errors"}) as mock_call:
+    with patch("soft_ue_cli.__main__.call_tool_ex", return_value=({"state": "blocked_by_blueprint_compile_errors"}, BridgeCallMeta())) as mock_call:
         cmd_pie_session(args)
 
     mock_call.assert_called_once_with(
@@ -4418,9 +5403,7 @@ def test_pie_session_blueprint_error_report_preflight_forwards_options():
         },
     )
 
-
 # -- pie-tick ------------------------------------------------------------------
-
 
 def test_pie_tick_parses_required_frames():
     args = build_parser().parse_args(["pie-tick", "--frames", "30"])
@@ -4429,7 +5412,6 @@ def test_pie_tick_parses_required_frames():
     assert args.delta is None
     assert args.no_auto_start is False
     assert args.map is None
-
 
 def test_pie_tick_parses_all_flags():
     args = build_parser().parse_args([
@@ -4446,20 +5428,17 @@ def test_pie_tick_parses_all_flags():
     assert args.map == "/Game/Maps/Test"
     assert args.timeout == 42.5
 
-
 def test_pie_tick_forwards_to_run_tool():
     ns = argparse.Namespace(frames=30, delta=None, no_auto_start=False, map=None, timeout=None)
     with patch("soft_ue_cli.__main__._run_tool", return_value={"ticks": 30}) as mock_run:
         cmd_pie_tick(ns)
     mock_run.assert_called_once_with("pie-tick", {"frames": 30}, timeout=90.0)
 
-
 def test_pie_tick_forwards_timeout_to_tool():
     ns = argparse.Namespace(frames=30, delta=None, no_auto_start=False, map=None, timeout=7.5)
     with patch("soft_ue_cli.__main__._run_tool", return_value={"ticks": 30}) as mock_run:
         cmd_pie_tick(ns)
     mock_run.assert_called_once_with("pie-tick", {"frames": 30, "timeout": 7.5}, timeout=67.5)
-
 
 def test_pie_tick_exits_nonzero_for_structured_native_timeout(capsys):
     ns = argparse.Namespace(frames=30, delta=None, no_auto_start=False, map=None, timeout=1.0)
@@ -4479,9 +5458,7 @@ def test_pie_tick_exits_nonzero_for_structured_native_timeout(capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["active_phase"] == "tick_frames"
 
-
 # -- inspect-anim-instance -----------------------------------------------------
-
 
 def test_inspect_anim_instance_parses_required():
     args = build_parser().parse_args(["anim", "instance", "inspect", "--actor-tag", "TestCharacter"])
@@ -4493,7 +5470,6 @@ def test_inspect_anim_instance_parses_required():
     assert args.include is None
     assert args.blend_weights is None
 
-
 def test_inspect_anim_instance_parses_all_flags():
     args = build_parser().parse_args(["anim", "instance", "inspect",
         "--actor-tag", "TestCharacter",
@@ -4504,7 +5480,6 @@ def test_inspect_anim_instance_parses_all_flags():
     assert args.mesh_component == "CharacterMesh0"
     assert args.include == "state_machines,montages"
     assert args.blend_weights == "LayerAim,LayerLocomotion"
-
 
 def test_inspect_anim_instance_forwards_to_run_tool():
     ns = argparse.Namespace(
@@ -4525,7 +5500,6 @@ def test_inspect_anim_instance_forwards_to_run_tool():
             "blend_weights": ["LayerAim"],
         },
     )
-
 
 def test_inspect_anim_instance_accepts_asset_path_without_actor_tag():
     args = build_parser().parse_args(["anim", "instance", "inspect",
@@ -4551,7 +5525,6 @@ def test_inspect_anim_instance_accepts_asset_path_without_actor_tag():
         },
     )
 
-
 def test_inspect_anim_instance_requires_actor_tag_or_asset_path():
     args = argparse.Namespace(
         actor_tag=None,
@@ -4565,7 +5538,6 @@ def test_inspect_anim_instance_requires_actor_tag_or_asset_path():
         cmd_inspect_anim_instance(args)
 
     assert exc.value.code == 1
-
 
 def test_sync_marker_commands_parse_and_forward():
     parser = build_parser()
@@ -4622,9 +5594,7 @@ def test_sync_marker_commands_parse_and_forward():
         },
     )
 
-
 # -- call-function extensions --------------------------------------------------
-
 
 def test_call_function_cdo_mode():
     args = build_parser().parse_args([
@@ -4639,7 +5609,6 @@ def test_call_function_cdo_mode():
     assert args.spawn_transient is False
     assert args.actor_name is None
 
-
 def test_call_function_transient_mode_with_seed():
     args = build_parser().parse_args([
         "call-function",
@@ -4651,7 +5620,6 @@ def test_call_function_transient_mode_with_seed():
     assert args.class_path == "/Game/Foo"
     assert args.spawn_transient is True
     assert args.seed == 42
-
 
 def test_call_function_batch_json_forwards(tmp_path):
     batch = [{"arg1": 1}, {"arg1": 2}]
@@ -4676,3 +5644,257 @@ def test_call_function_batch_json_forwards(tmp_path):
         "call-function",
         {"function_name": "Bar", "class_path": "/Game/Foo", "use_cdo": True, "batch": batch},
     )
+
+def test_format_session_notices_is_empty_for_no_notices():
+    from soft_ue_cli.__main__ import format_session_notices
+
+    assert format_session_notices([]) == ""
+
+def test_format_session_notices_names_party_and_action():
+    from soft_ue_cli.__main__ import format_session_notices
+
+    text = format_session_notices([
+        {
+            "kind": "ask",
+            "from_label": "codex:cloth-weld",
+            "text": "can I build-and-relaunch now?",
+            "reply_with": "soft-ue-cli session answer --id a-77 --decision wait",
+        }
+    ])
+
+    assert "codex:cloth-weld" in text
+    assert "can I build-and-relaunch now?" in text
+    assert "session answer --id a-77" in text
+    assert "WARNING" not in text
+    assert "⚠" not in text
+
+def test_session_parser_exposes_all_leaves():
+    parser = build_parser()
+    for leaf in ["announce", "list", "broadcast", "ask", "answer", "inbox", "leave"]:
+        args = parser.parse_args(["session", leaf] + _session_leaf_required_args(leaf))
+        assert args.session_action == leaf
+
+def _session_leaf_required_args(leaf):
+    return {
+        "announce": [],
+        "list": [],
+        "broadcast": ["--message", "hi"],
+        "ask": ["--to", "other", "--question", "ok to rebuild?"],
+        "answer": ["--id", "a-77", "--answer", "wait 3 min"],
+        "inbox": [],
+        "leave": [],
+    }[leaf]
+
+def test_session_as_flag_defaults_to_env(monkeypatch):
+    monkeypatch.setenv("SOFT_UE_SESSION", "cape-cloth")
+    parser = build_parser()
+    args = parser.parse_args(["session", "list"])
+    assert args.session_as == "cape-cloth"
+
+def test_session_announce_sends_resources_as_list():
+    captured = {}
+    with patch.object(main_mod, "_run_tool", lambda name, arguments, **kw: captured.update(
+        {"name": name, "arguments": arguments}
+    ) or {}):
+        args = build_parser().parse_args([
+            "session", "announce", "--as", "cape-cloth",
+            "--status", "converting cloth",
+            "--resources", "/Game/A,/Game/B",
+        ])
+        args.func(args)
+
+    assert captured["name"] == "session"
+    assert captured["arguments"]["action"] == "announce"
+    assert captured["arguments"]["resources"] == ["/Game/A", "/Game/B"]
+    assert captured["arguments"]["status"] == "converting cloth"
+
+def _fake_clock():
+    """A deterministic stand-in for time.monotonic/time.sleep.
+
+    time.sleep(n) advances the fake clock by n instead of actually sleeping,
+    so poll loops that call time.sleep(2.0) between iterations run instantly
+    in tests while still exercising the real deadline arithmetic.
+    """
+    state = {"t": 0.0}
+
+    def fake_monotonic():
+        return state["t"]
+
+    def fake_sleep(seconds):
+        state["t"] += seconds
+
+    return fake_monotonic, fake_sleep
+
+def test_poll_for_answer_returns_no_answer_on_expiry(monkeypatch):
+    fake_monotonic, fake_sleep = _fake_clock()
+    monkeypatch.setattr(main_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(main_mod.time, "sleep", fake_sleep)
+
+    calls = []
+
+    def fake_run_tool(name, arguments, **kw):
+        calls.append(arguments)
+        return {"silent": [{"session": "cape-cloth", "last_seen_s": 5}]}
+
+    with patch.object(main_mod, "_run_tool", fake_run_tool):
+        args = argparse.Namespace(session_as="builder")
+        result = main_mod._poll_for_answer(args, "a-77", 5.0)
+
+    assert result["status"] == "no_answer"
+    assert result["ask_id"] == "a-77"
+    assert result["waited_s"] == 5
+    assert result["answered"] == []
+    assert result["silent"] == [{"session": "cape-cloth", "last_seen_s": 5}]
+    assert "Silence is NOT consent" in result["guidance"]
+
+    # Each poll must hit the same ask_id via the inbox action, never a new ask.
+    assert len(calls) == 3
+    for call in calls:
+        assert call["action"] == "inbox"
+        assert call["ask_id"] == "a-77"
+        assert call["no_mark_read"] is True
+
+def test_poll_for_answer_returns_early_when_answer_arrives(monkeypatch):
+    fake_monotonic, fake_sleep = _fake_clock()
+    monkeypatch.setattr(main_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(main_mod.time, "sleep", fake_sleep)
+
+    responses = [
+        {"silent": [{"session": "cape-cloth"}]},
+        {"answers": [{"from_label": "cape-cloth", "text": "go ahead"}]},
+    ]
+    calls = []
+
+    def fake_run_tool(name, arguments, **kw):
+        calls.append(arguments)
+        return responses[len(calls) - 1]
+
+    with patch.object(main_mod, "_run_tool", fake_run_tool):
+        args = argparse.Namespace(session_as="builder")
+        result = main_mod._poll_for_answer(args, "a-77", 30.0)
+
+    # Returns the exact payload from the poll where "answers" first appeared,
+    # not a re-derived summary, and stops polling immediately after.
+    assert result == responses[1]
+    assert len(calls) == 2
+
+def test_session_inbox_wait_returns_once_messages_appear(monkeypatch):
+    fake_monotonic, fake_sleep = _fake_clock()
+    monkeypatch.setattr(main_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(main_mod.time, "sleep", fake_sleep)
+
+    responses = [{}, {"messages": [{"text": "hi"}]}]
+    calls = []
+    printed = {}
+
+    def fake_run_tool(name, arguments, **kw):
+        calls.append(arguments)
+        return responses[len(calls) - 1]
+
+    with patch.object(main_mod, "_run_tool", fake_run_tool), patch.object(
+        main_mod, "_print_json", lambda data: printed.update(result=data)
+    ):
+        args = argparse.Namespace(
+            session_as="builder",
+            unread_only=False,
+            no_mark_read=False,
+            since=None,
+            wait=30.0,
+        )
+        main_mod.cmd_session_inbox(args)
+
+    assert printed["result"] == responses[1]
+    assert len(calls) == 2
+    for call in calls:
+        assert call["action"] == "inbox"
+
+def test_session_inbox_wait_terminates_when_nothing_ever_arrives(monkeypatch):
+    fake_monotonic, fake_sleep = _fake_clock()
+    monkeypatch.setattr(main_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(main_mod.time, "sleep", fake_sleep)
+
+    calls = []
+    printed = {}
+
+    def fake_run_tool(name, arguments, **kw):
+        calls.append(arguments)
+        return {}
+
+    with patch.object(main_mod, "_run_tool", fake_run_tool), patch.object(
+        main_mod, "_print_json", lambda data: printed.update(result=data)
+    ):
+        args = argparse.Namespace(
+            session_as="builder",
+            unread_only=False,
+            no_mark_read=False,
+            since=None,
+            wait=5.0,
+        )
+        main_mod.cmd_session_inbox(args)
+
+    # Still returns the last (empty) result once the deadline passes, rather
+    # than looping forever.
+    assert printed["result"] == {}
+    assert len(calls) == 4
+
+def test_claude_md_section_recruits_sessions_into_the_channel():
+    section = _claude_md_section("soft-ue-cli")
+
+    assert "session announce" in section
+    assert "session list" in section
+    assert "session inbox" in section
+    assert "session ask" in section
+    assert "session leave" in section
+    assert "skills get session-protocol" in section
+
+def test_claude_md_section_carries_identity_on_every_session_command():
+    """Identity is per-command, not per-shell, and only the env prefix is universal.
+
+    ``--as`` exists on the ``session`` leaves alone, so an example that used it
+    would teach a form that fails on ``pie-session start``. ``export`` does not
+    survive between Claude Code Bash calls either. Every invocation shown here
+    must therefore carry the inline ``SOFT_UE_SESSION=`` prefix.
+    """
+    section = _claude_md_section("soft-ue-cli")
+
+    invocations = [line for line in section.splitlines() if "soft-ue-cli session " in line]
+    assert invocations
+    for invocation in invocations:
+        assert "SOFT_UE_SESSION=<your-name>" in invocation, (
+            f"session command without identity: {invocation}"
+        )
+        assert "--as" not in invocation, (
+            f"session command mixing identity forms: {invocation}"
+        )
+
+def test_claude_md_section_shows_the_prefix_on_a_non_session_command():
+    """The failure this block exists to prevent is a PIE claim on a nameless row.
+
+    Showing the prefix only on ``session`` commands is what leads an agent to
+    announce as ``cape-cloth`` and then claim ``pie`` as ``unknown:<origin>``.
+    """
+    section = _claude_md_section("soft-ue-cli")
+
+    assert "SOFT_UE_SESSION=<your-name> soft-ue-cli pie-session start" in section
+
+def test_session_help_examples_use_the_universal_identity_form():
+    """`session --help` is the third place an agent learns the identity form.
+
+    Examples using `--as` here are valid, but they teach the generalization that
+    breaks on `pie-session start --as <name>`.
+    """
+    epilog = build_parser()._subparsers._group_actions[0].choices["session"].description
+
+    example_lines = [line for line in epilog.splitlines() if "soft-ue-cli session" in line]
+    assert example_lines
+    for line in example_lines:
+        assert "SOFT_UE_SESSION=" in line, f"example without identity: {line}"
+        assert "--as" not in line, f"example mixing identity forms: {line}"
+
+def test_as_flag_exists_only_on_session_commands():
+    """Pins the claim the docs now make: ``--as`` elsewhere is an argparse error."""
+    parser = build_parser()
+
+    assert parser.parse_args(["session", "list", "--as", "cape-cloth"]).session_as == "cape-cloth"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["pie-session", "start", "--as", "cape-cloth"])

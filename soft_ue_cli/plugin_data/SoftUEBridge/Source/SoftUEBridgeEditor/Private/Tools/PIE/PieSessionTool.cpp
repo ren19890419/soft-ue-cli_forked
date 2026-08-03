@@ -3,7 +3,9 @@
 #include "Tools/PIE/PieSessionTool.h"
 #include "SoftUEBridgeEditorModule.h"
 #include "Tools/Widget/WidgetPreviewRegistry.h"
+#include "Session/BridgeSessionRegistry.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "LevelEditor.h"
 #include "LevelEditorSubsystem.h"
 #include "Engine/World.h"
@@ -61,6 +63,20 @@ namespace
 		return GBridgePIETransitionStartedAt > 0.0
 			? FPlatformTime::Seconds() - GBridgePIETransitionStartedAt
 			: 0.0;
+	}
+
+	bool ClearPIETransactionsIfNeeded()
+	{
+		if (!GEditor || !GEditor->Trans || !GEditor->Trans->ContainsPieObjects())
+		{
+			return false;
+		}
+
+		GEditor->ResetTransaction(NSLOCTEXT(
+			"SoftUEBridgeEditor",
+			"BridgePIEStopTransactionContainedPIEObject",
+			"SoftUEBridge PIE stop cleared editor undo history because it contained PIE objects"));
+		return true;
 	}
 }
 
@@ -172,11 +188,11 @@ FBridgeToolResult UPieSessionTool::Execute(
 
 	if (Action == TEXT("start"))
 	{
-		return ExecuteStart(Arguments);
+		return ExecuteStart(Arguments, Context);
 	}
 	else if (Action == TEXT("stop"))
 	{
-		return ExecuteStop(Arguments);
+		return ExecuteStop(Arguments, Context);
 	}
 	else if (Action == TEXT("pause"))
 	{
@@ -201,8 +217,14 @@ FBridgeToolResult UPieSessionTool::Execute(
 	}
 }
 
-FBridgeToolResult UPieSessionTool::ExecuteStart(const TSharedPtr<FJsonObject>& Arguments)
+FBridgeToolResult UPieSessionTool::ExecuteStart(
+	const TSharedPtr<FJsonObject>& Arguments,
+	const FBridgeToolContext& Context)
 {
+	// Filed under the same id Touch registers, so a caller that declared only an
+	// origin still claims against its own record instead of silently doing nothing.
+	const FString CallerSessionId = FBridgeSessionRegistry::ResolveSessionId(Context);
+
 	FString Mode = GetStringArgOrDefault(Arguments, TEXT("mode"), TEXT("viewport"));
 	FString MapPath = GetStringArgOrDefault(Arguments, TEXT("map"));
 	FString BlueprintErrorAction = GetStringArgOrDefault(Arguments, TEXT("blueprint_error_action"), TEXT("modal")).ToLower();
@@ -242,6 +264,7 @@ FBridgeToolResult UPieSessionTool::ExecuteStart(const TSharedPtr<FJsonObject>& A
 			Result->SetBoolField(TEXT("start_request_dispatched"), false);
 			Result->SetNumberField(TEXT("transition_age_seconds"), GetTransitionAgeSeconds());
 			Result->SetStringField(TEXT("blueprint_error_action"), BlueprintErrorAction);
+			FBridgeSessionRegistry::Get().ClaimResource(CallerSessionId, TEXT("pie"));
 			return FBridgeToolResult::Json(Result);
 		}
 	}
@@ -263,6 +286,7 @@ FBridgeToolResult UPieSessionTool::ExecuteStart(const TSharedPtr<FJsonObject>& A
 		Result->SetNumberField(TEXT("transition_age_seconds"), GetTransitionAgeSeconds());
 		Result->SetStringField(TEXT("blueprint_error_action"), BlueprintErrorAction);
 		Result->SetBoolField(TEXT("preflight_blueprints"), bPreflightBlueprints);
+		FBridgeSessionRegistry::Get().ClaimResource(CallerSessionId, TEXT("pie"));
 		return FBridgeToolResult::Json(Result);
 	}
 
@@ -341,15 +365,24 @@ FBridgeToolResult UPieSessionTool::ExecuteStart(const TSharedPtr<FJsonObject>& A
 		Result->SetStringField(TEXT("world_name"), PIEWorld->GetName());
 	}
 
+	// The roster is populated by ordinary PIE traffic: a session that never calls
+	// `session announce` still shows up holding 'pie'.
+	FBridgeSessionRegistry::Get().ClaimResource(CallerSessionId, TEXT("pie"));
+
 	UE_LOG(LogSoftUEBridgeEditor, Log, TEXT("pie-session: Start requested"));
 	return FBridgeToolResult::Json(Result);
 }
 
-FBridgeToolResult UPieSessionTool::ExecuteStop(const TSharedPtr<FJsonObject>& Arguments)
+FBridgeToolResult UPieSessionTool::ExecuteStop(
+	const TSharedPtr<FJsonObject>& Arguments,
+	const FBridgeToolContext& Context)
 {
+	const FString CallerSessionId = FBridgeSessionRegistry::ResolveSessionId(Context);
+
 	const bool bRunning = GEditor->IsPlaySessionInProgress();
 	const bool bCleanupToolPreviews = GetBoolArgOrDefault(Arguments, TEXT("cleanup_tool_previews"), true);
 	int32 RemovedToolPreviews = 0;
+	bool bClearedPIETransactions = false;
 	if (!bRunning && GBridgePIETransition != EBridgePIETransition::Starting)
 	{
 		ClearPIETransition();
@@ -358,6 +391,22 @@ FBridgeToolResult UPieSessionTool::ExecuteStop(const TSharedPtr<FJsonObject>& Ar
 		Result->SetStringField(TEXT("state"), TEXT("not_running"));
 		Result->SetBoolField(TEXT("cleanup_tool_previews"), bCleanupToolPreviews);
 		Result->SetNumberField(TEXT("removed_tool_previews"), RemovedToolPreviews);
+		Result->SetBoolField(TEXT("cleared_pie_transactions"), bClearedPIETransactions);
+		// The release stands on this path too: this session is demonstrably no longer
+		// depending on PIE.
+		FBridgeSessionRegistry::Get().ReleaseResource(CallerSessionId, TEXT("pie"));
+
+		// Naming who else is live is true on every path. Only the consequence sentence
+		// is path-dependent, and nothing was stopped here, so it is left out.
+		TArray<TSharedPtr<FJsonValue>> Others =
+			FBridgeSessionRegistry::Get().OtherLiveSessionsJson(CallerSessionId);
+		if (Others.Num() > 0)
+		{
+			Result->SetArrayField(TEXT("other_sessions"), Others);
+			Result->SetStringField(TEXT("other_sessions_note"),
+				TEXT("Other sessions are active in this editor. Check each one's state and last_seen_s."));
+		}
+
 		return FBridgeToolResult::Json(Result);
 	}
 
@@ -370,6 +419,7 @@ FBridgeToolResult UPieSessionTool::ExecuteStop(const TSharedPtr<FJsonObject>& Ar
 				RemovedToolPreviews = FWidgetPreviewRegistry::RemovePreviewsForWorld(PIEWorld);
 			}
 		}
+		bClearedPIETransactions = ClearPIETransactionsIfNeeded();
 		GEditor->RequestEndPlayMap();
 	}
 
@@ -388,7 +438,23 @@ FBridgeToolResult UPieSessionTool::ExecuteStop(const TSharedPtr<FJsonObject>& Ar
 	Result->SetStringField(TEXT("state"), GEditor->IsPlaySessionInProgress() ? TEXT("stopping") : TEXT("stopped"));
 	Result->SetBoolField(TEXT("cleanup_tool_previews"), bCleanupToolPreviews);
 	Result->SetNumberField(TEXT("removed_tool_previews"), RemovedToolPreviews);
-	Result->SetStringField(TEXT("stop_diagnostics"), TEXT("tool previews are removed before PIE shutdown by default"));
+	Result->SetBoolField(TEXT("cleared_pie_transactions"), bClearedPIETransactions);
+	Result->SetStringField(TEXT("stop_diagnostics"), TEXT("tool previews are removed and PIE object transactions are cleared before PIE shutdown by default"));
+
+	FBridgeSessionRegistry::Get().ReleaseResource(CallerSessionId, TEXT("pie"));
+
+	TArray<TSharedPtr<FJsonValue>> Others =
+		FBridgeSessionRegistry::Get().OtherLiveSessionsJson(CallerSessionId);
+	if (Others.Num() > 0)
+	{
+		Result->SetArrayField(TEXT("other_sessions"), Others);
+		// This path is also reached with bRunning false, when a stop lands while a start
+		// is still spinning up. Nothing was ended then, so the consequence is left out.
+		Result->SetStringField(TEXT("other_sessions_note"), bRunning
+			? TEXT("Other sessions are active in this editor. Stopping PIE ends the play session "
+			       "for all of them. Check each one's state and last_seen_s.")
+			: TEXT("Other sessions are active in this editor. Check each one's state and last_seen_s."));
+	}
 
 	UE_LOG(LogSoftUEBridgeEditor, Log, TEXT("pie-session: Stop requested"));
 	return FBridgeToolResult::Json(Result);

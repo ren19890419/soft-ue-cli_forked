@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from unittest.mock import patch
 
 from soft_ue_cli import __main__ as main_mod
@@ -13,7 +12,6 @@ from soft_ue_cli.diagnostics import (
     summarize_p4_opened,
     validate_data_files,
 )
-
 
 def test_summarize_build_log_classifies_unreal_failures():
     text = """
@@ -33,7 +31,6 @@ def test_summarize_build_log_classifies_unreal_failures():
     }
     assert result["next_steps"]
 
-
 def test_summarize_p4_opened_flags_binary_and_generated_changes():
     text = """
     //depot/Game/Content/Hero.uasset#3 - edit change 123 (binary)
@@ -48,7 +45,6 @@ def test_summarize_p4_opened_flags_binary_and_generated_changes():
     assert result["risky_count"] == 2
     assert any(item["risk"] == "binary_asset" for item in result["risky_files"])
     assert any(item["risk"] == "generated_file" for item in result["risky_files"])
-
 
 def test_issue_investigation_plan_accepts_jira_and_sentry_payloads():
     jira = make_issue_investigation_plan(
@@ -67,7 +63,6 @@ def test_issue_investigation_plan_accepts_jira_and_sentry_payloads():
     assert "Crash in ABP_Hero" in sentry["title"]
     assert sentry["investigation_plan"]
 
-
 def test_validate_data_files_detects_empty_references_and_duplicate_rows(tmp_path):
     csv_path = tmp_path / "DT_Items.csv"
     csv_path.write_text(
@@ -82,7 +77,6 @@ def test_validate_data_files_detects_empty_references_and_duplicate_rows(tmp_pat
     assert any(problem["kind"] == "duplicate_row_name" for problem in result["problems"])
     assert any(problem["kind"] == "empty_reference" for problem in result["problems"])
 
-
 def test_build_handoff_report_generates_markdown():
     result = build_handoff_report(
         title="Animation crash",
@@ -94,7 +88,6 @@ def test_build_handoff_report_generates_markdown():
     assert result["schema"] == "soft_ue.diagnose.handoff.v1"
     assert "# Animation crash" in result["markdown"]
     assert "Run anim montage inspect" in result["markdown"]
-
 
 def test_cmd_diagnose_asset_runs_existing_inspectors(capsys):
     parser = build_parser()
@@ -120,7 +113,6 @@ def test_cmd_diagnose_asset_runs_existing_inspectors(capsys):
     assert payload["schema"] == "soft_ue.diagnose.asset.v1"
     assert payload["checks"][0]["tool"] == "query-asset"
 
-
 def test_cmd_diagnose_character_returns_retarget_lod_plan(capsys):
     parser = build_parser()
     args = parser.parse_args([
@@ -139,7 +131,6 @@ def test_cmd_diagnose_character_returns_retarget_lod_plan(capsys):
     assert payload["schema"] == "soft_ue.diagnose.character.v1"
     assert any("retarget" in step.lower() for step in payload["diagnostic_steps"])
     assert any("lod" in step.lower() for step in payload["diagnostic_steps"])
-
 
 def test_cmd_diagnose_probe_runs_repeatable_pie_sequence(capsys):
     parser = build_parser()

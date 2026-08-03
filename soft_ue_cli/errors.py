@@ -21,12 +21,14 @@ class BridgeError(Exception):
         message: str,
         tool_name: str,
         arguments: dict,
+        notices: list | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.tool_name = tool_name
         self.arguments = arguments
+        self.notices = list(notices or [])
 
 
 def format_bug_nudge(tool_name: str, error_message: str) -> str:

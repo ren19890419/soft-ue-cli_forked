@@ -36,9 +36,9 @@ private:
 	bool DetectReflectedHeaderChanges(TArray<FString>& OutFiles, const FString& ModuleScope, const FString& PluginScope) const;
 
 	// Execute synchronous compilation (blocks until complete)
-	FBridgeToolResult ExecuteSynchronous(ILiveCodingModule* LiveCodingModule);
+	FBridgeToolResult ExecuteSynchronous(ILiveCodingModule* LiveCodingModule, const FBridgeToolContext& Context);
 
 	// Execute asynchronous compilation (fire and forget)
-	FBridgeToolResult ExecuteAsynchronous(ILiveCodingModule* LiveCodingModule);
+	FBridgeToolResult ExecuteAsynchronous(ILiveCodingModule* LiveCodingModule, const FBridgeToolContext& Context);
 #endif
 };

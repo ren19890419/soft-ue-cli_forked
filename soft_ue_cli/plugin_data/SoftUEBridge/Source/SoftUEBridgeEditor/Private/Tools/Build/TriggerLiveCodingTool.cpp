@@ -2,6 +2,7 @@
 
 #include "Tools/Build/TriggerLiveCodingTool.h"
 #include "SoftUEBridgeEditorModule.h"
+#include "Session/BridgeSessionRegistry.h"
 #include "Engine/Engine.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformProcess.h"
@@ -54,6 +55,33 @@ static bool IsHeaderPathInLiveCodingScope(
 	}
 
 	return true;
+}
+
+/**
+ * Names whoever else is sharing this editor, on every Live Coding result.
+ *
+ * The roster itself is never gated: an agent reads this response to learn whether its
+ * patch landed, which makes it the one place a roster is reliably seen. Only the
+ * consequence sentence is path-dependent -- a compile that was cancelled, failed or
+ * never started invalidates nobody's PIE session, and saying otherwise is a false claim.
+ */
+static void AppendOtherLiveSessions(
+	const TSharedPtr<FJsonObject>& Result,
+	const FBridgeToolContext& Context,
+	bool bCouldInvalidatePie)
+{
+	TArray<TSharedPtr<FJsonValue>> Others = FBridgeSessionRegistry::Get().OtherLiveSessionsJson(
+		FBridgeSessionRegistry::ResolveSessionId(Context));
+	if (Others.Num() == 0)
+	{
+		return;
+	}
+
+	Result->SetArrayField(TEXT("other_sessions"), Others);
+	Result->SetStringField(TEXT("other_sessions_note"), bCouldInvalidatePie
+		? TEXT("Other sessions are active in this editor. A Live Coding patch can invalidate "
+		       "a running PIE session. Check each one's state and last_seen_s.")
+		: TEXT("Other sessions are active in this editor. Check each one's state and last_seen_s."));
 }
 #endif
 
@@ -140,6 +168,7 @@ FBridgeToolResult UTriggerLiveCodingTool::Execute(
 		Result->SetBoolField(TEXT("success"), true);
 		Result->SetStringField(TEXT("status"), TEXT("triggered_async"));
 		Result->SetStringField(TEXT("message"), TEXT("Live Coding triggered via console command"));
+		AppendOtherLiveSessions(Result, Context, /*bCouldInvalidatePie=*/true);
 		return FBridgeToolResult::Json(Result);
 	}
 
@@ -152,12 +181,12 @@ FBridgeToolResult UTriggerLiveCodingTool::Execute(
 	if (bWaitForCompletion)
 	{
 		// Synchronous mode: Wait for compilation to complete
-		return ExecuteSynchronous(LiveCodingModule);
+		return ExecuteSynchronous(LiveCodingModule, Context);
 	}
 	else
 	{
 		// Asynchronous mode: Just trigger and return immediately
-		return ExecuteAsynchronous(LiveCodingModule);
+		return ExecuteAsynchronous(LiveCodingModule, Context);
 	}
 #endif
 }
@@ -232,7 +261,9 @@ bool UTriggerLiveCodingTool::DetectReflectedHeaderChanges(
 	return OutFiles.Num() > 0;
 }
 
-FBridgeToolResult UTriggerLiveCodingTool::ExecuteSynchronous(ILiveCodingModule* LiveCodingModule)
+FBridgeToolResult UTriggerLiveCodingTool::ExecuteSynchronous(
+	ILiveCodingModule* LiveCodingModule,
+	const FBridgeToolContext& Context)
 {
 	UE_LOG(LogSoftUEBridgeEditor, Log, TEXT("trigger-live-coding: Starting synchronous compilation..."));
 
@@ -314,11 +345,15 @@ FBridgeToolResult UTriggerLiveCodingTool::ExecuteSynchronous(ILiveCodingModule* 
 	Result->SetBoolField(TEXT("success"), bSuccess);
 	Result->SetStringField(TEXT("status"), StatusStr);
 	Result->SetStringField(TEXT("message"), MessageStr);
+	// A cancelled, failed, busy or not-started compile patched nothing.
+	AppendOtherLiveSessions(Result, Context, /*bCouldInvalidatePie=*/bSuccess);
 
 	return FBridgeToolResult::Json(Result);
 }
 
-FBridgeToolResult UTriggerLiveCodingTool::ExecuteAsynchronous(ILiveCodingModule* LiveCodingModule)
+FBridgeToolResult UTriggerLiveCodingTool::ExecuteAsynchronous(
+	ILiveCodingModule* LiveCodingModule,
+	const FBridgeToolContext& Context)
 {
 	// Just trigger compilation and return immediately
 	LiveCodingModule->Compile(ELiveCodingCompileFlags::None, nullptr);
@@ -328,6 +363,7 @@ FBridgeToolResult UTriggerLiveCodingTool::ExecuteAsynchronous(ILiveCodingModule*
 	Result->SetStringField(TEXT("status"), TEXT("triggered_async"));
 	Result->SetStringField(TEXT("message"), TEXT("Live Coding compilation initiated. Check Output Log for results."));
 	Result->SetStringField(TEXT("shortcut"), TEXT("Ctrl+Alt+F11"));
+	AppendOtherLiveSessions(Result, Context, /*bCouldInvalidatePie=*/true);
 
 	UE_LOG(LogSoftUEBridgeEditor, Log, TEXT("trigger-live-coding: Async compilation triggered"));
 

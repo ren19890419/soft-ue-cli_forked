@@ -26,6 +26,13 @@ struct SOFTUEBRIDGE_API FBridgeToolContext
 
 	FString RequestId;
 	EBridgeToolExecutionContext ExecutionContext = EBridgeToolExecutionContext::GameThread;
+
+	/** Identity of the calling LLM session, from params._session. All may be empty. */
+	FString SessionId;
+	FString SessionLabel;
+	FString OriginId;
+	FString ClientKind;
+	int32 ClientPid = 0;
 };
 
 /** Abstract base class for all bridge tools */

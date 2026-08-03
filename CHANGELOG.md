@@ -2,11 +2,61 @@
 
 All notable changes to soft-ue-cli will be documented in this file.
 
+## Unreleased
+
+## [1.44.0] - 2026-07-28
+
+### Added
+- `cloth apply-weightmap` now supports the legacy `anim-drive-stiffness`, `anim-drive-damping`, `backstop-distance`, and `backstop-radius` weight-map targets in addition to `max-distance`.
+- `cloth chaos-query` can now report near-vertex seam gap candidates and dump per-simulation-vertex weight values with positions.
+- Added `cloth chaos-set-weightmap` to set Chaos Cloth Asset weight-map values by sim vertex list or spatial selection.
+- `cloth chaos-stitch --dry-run` now reports candidate stitch pairs without mutating the asset.
+- Added `cloth weld` to weld coincident vertices in a legacy in-mesh clothing asset's physical mesh and rebuild render mappings.
+- `cloth apply-weightmap` now supports a legacy `--rule spatial` for local Z/sphere selection with constant values or Z-ramped max-distance values, and preflights bound render mappings before mutating the asset.
+- Added the `session` command family (`announce`, `list`, `broadcast`, `ask`, `answer`, `inbox`, `leave`) so multiple LLM sessions sharing one editor can see each other's work and ask before disruptive operations. Advisory only — nothing is blocked.
+- The session roster is derived from bridge traffic, so a session appears with its PIE state even when it never calls `session announce`.
+- Bridge responses now carry `session_notices` when other sessions have something to report to the caller: on stderr for the CLI, in the result body for MCP.
+- `build-and-relaunch`, `trigger-live-coding`, and `pie-session stop` results now list other active sessions when any exist.
+- A failed connection now reports which session shut the editor down, read from `.soft-ue-bridge/sessions.json`, when that shutdown went through `build-and-relaunch` and the record is recent. A shutdown intent outlives the editor that wrote it, so an older record is reported as last-known sessions instead of being blamed for the disconnect.
+
+### Fixed
+- Nested command families (`cloth`, `anim`, `umg`, `capture`, `session`) now report the real error reason over MCP instead of `exited with code 1`.
+
+## [1.43.1] - 2026-07-18
+
+### Fixed
+- SoftUEBridgeEditor now includes `Editor/Transactor.h` so `PieSessionTool.cpp` clean-builds when checking PIE-owned transaction objects.
+- Added `DataflowEngine` to SoftUEBridgeEditor dependencies so Chaos Cloth Dataflow terminal calls link in clean builds.
+
+## [1.43.0] - 2026-07-18
+
+### Added
+- Added the `cloth` command family for Chaos Cloth asset query/create/bind/config/weight-map/collision workflows on SkeletalMesh assets.
+- Added `cloth chaos-query` to inspect Dataflow-based Chaos Cloth Asset LODs, seams, sim/render mesh counts, and weight maps.
+- Added `cloth convert` to export a legacy in-mesh clothing asset into a Dataflow-based Chaos Cloth Asset.
+- Added `cloth chaos-stitch` to add stitch/seam pairs to Chaos Cloth Asset simulation meshes.
+- Added `cloth chaos-set-config` to set Chaos Cloth Asset simulation config properties from JSON.
+- `cloth create --section-index` can now be repeated or passed comma-separated values to create one welded cloth asset across multiple material sections.
+- `cloth create` now accepts `--weld-tolerance` to control position-based sim vertex welding when merging multiple sections.
+- `cloth apply-weightmap` now supports `--rule bone-distance` for root-bone falloff max-distance maps on draping cloth.
+- Added `blueprint-component-add` for adding Blueprint SCS component templates, including `--attach-to` and `--attach-socket` support for setting the parent socket/bone.
+- `build-and-relaunch` now accepts `--no-uba`, `--no-xge`, and defaults to a local `-NoUBA -NoXGE` retry when an initial distributed build fails.
+- `build-and-relaunch` now moves Unreal's package-restore marker before relaunch by default to avoid the startup restore modal, with `--keep-package-restore` to preserve the prompt.
+- `run-python-script` now accepts `--relaunch-on-crash` with project/editor discovery options to relaunch the editor and retry once after detecting an editor crash.
+
+### Fixed
+- `cloth create --bind` and `cloth bind` now persist section clothing metadata and repair stale cloth LOD mappings so `cloth query` reports the binding after save/reload.
+- `cloth bind` now rebuilds SkeletalMesh render data after applying section cloth metadata so `is_section_using_cloth` reflects the bound section.
+- `run-python-script` now reports a clear `EDITOR_TERMINATED_DURING_EXECUTION` error when the bridge returns an empty result and the editor is no longer reachable.
+- Offline `build-and-relaunch --project` discovery now checks registered custom Unreal EngineAssociation entries before installed-engine fallbacks.
+
 ## [1.42.0] - 2026-07-11
 
 ### Added
 - `run-python-script` now accepts `--args ...` after CLI options and forwards those values to the executed script as `sys.argv[1:]`.
 - MCP callers can now pass `script_args` as an array for `run-python-script`.
+- Added `mcp-surface-status` to report UE 5.8 official MCP and SoftUEBridge availability with a local recommendation.
+- Added `runtime` planning commands for packaged bridge readiness, binary install/update/rollback plans, and CLI-first runtime smoke plans.
 
 ### Fixed
 - Fixed a UE 5.8 bridge build break by removing the direct `FJsonObject::FStringType` dependency from JSON object key conversion while preserving UE 5.7 compatibility.

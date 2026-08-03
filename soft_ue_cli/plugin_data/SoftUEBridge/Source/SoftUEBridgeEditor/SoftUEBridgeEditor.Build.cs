@@ -37,6 +37,19 @@ public class SoftUEBridgeEditor : ModuleRules
 			"IKRig",
 			"IKRigEditor",
 
+			// Chaos Cloth
+			"ClothingSystemRuntimeInterface",
+			"ClothingSystemRuntimeCommon",
+			"ClothingSystemEditorInterface",
+			"ClothingSystemEditor",
+			"Chaos",
+			"ChaosCore",
+			"ChaosClothAsset",
+			"ChaosClothAssetEngine",
+			"ChaosClothAssetTools",
+			"DataflowEngine",
+			"ClothPainter",
+
 			// Asset Management
 			"AssetTools",
 			"AssetRegistry",
